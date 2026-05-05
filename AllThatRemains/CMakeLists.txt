@@ -1,3 +1,3 @@
-
-
-add_executable(AllThatRemains src/main.cpp)
+add_executable(AllThatRemains
+        src/main.cpp
+)

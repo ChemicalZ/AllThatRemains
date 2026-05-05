@@ -4,6 +4,6 @@
 
 int main() {
     auto engine = fe::Engine();
-    engine.Run();
+    engine.Run("AllThatRemains", 800, 600);
     return 0;
 }

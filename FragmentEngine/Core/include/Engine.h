@@ -8,7 +8,7 @@
 namespace fe {
     class Engine {
     public:
-        void Run();
+        int Run(const char* title, int width, int height);
     };
 } // fe
 

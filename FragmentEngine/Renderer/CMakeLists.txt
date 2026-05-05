@@ -9,6 +9,7 @@ target_include_directories(FragmentRenderer PUBLIC
 )
 
 target_link_libraries(FragmentRenderer PUBLIC
+        sdl::sdl
         vulkan-headers::vulkan-headers
         Vulkan::Loader
         GPUOpen::VulkanMemoryAllocator

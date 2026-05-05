@@ -9,4 +9,5 @@ target_include_directories(FragmentCore PUBLIC
 
 target_link_libraries(FragmentCore
         sdl::sdl
+        FragmentRenderer
 )

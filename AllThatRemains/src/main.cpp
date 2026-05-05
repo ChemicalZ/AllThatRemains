@@ -1,6 +1,9 @@
 #include <iostream>
 
+#include "Engine.h"
+
 int main() {
-    std::cout << "Hello, World!" << std::endl;
+    auto engine = fe::Engine();
+    engine.Run();
     return 0;
 }

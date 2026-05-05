@@ -7,6 +7,8 @@
 
 namespace fe {
     class Engine {
+    public:
+        void Run();
     };
 } // fe
 

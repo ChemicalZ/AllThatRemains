@@ -1,0 +1,8 @@
+# This file is managed by Conan, contents will be overwritten.
+# To keep your changes, remove these comment lines, but the plugin won't be able to modify your requirements
+
+requirements:
+  - "sdl/3.4.0"
+  - "vulkan-loader/1.4.313.0"
+  - "vulkan-memory-allocator/3.3.0"
+  - "vulkan-headers/1.4.313.0"

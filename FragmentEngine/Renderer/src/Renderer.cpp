@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <vector>
 #include <vulkan/vulkan.h>
+#include <optional>
+#include <set>
 
 const std::vector<const char *> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -24,14 +26,29 @@ constexpr bool enableValidationLayers = true;
 namespace fe {
     struct Renderer::Impl {
         SDL_Window *_pWindow;
+        VkSurfaceKHR _surface{};
         VkInstance _instance{};
         VkDebugUtilsMessengerEXT _debugMessenger{};
         VkAllocationCallbacks _allocator{};
         VkPhysicalDevice _physicalDevice{};
+        VkDevice _device{};
+        VkQueue _graphicsQueue{};
+        VkQueue _presentQueue{};
+
+
+        struct QueueFamilyIndices {
+            std::optional<uint32_t> graphicsFamily;
+            std::optional<uint32_t> presentFamily;
+            bool isComplete() { return graphicsFamily.has_value() && presentFamily.has_value(); }
+        };
 
         void createVulkanInstance();
         void setupDebugMessenger();
+        void createSurface();
         void pickPhysicalDevice();
+        void createLogicalDevice();
+
+        QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
 
         int rateDeviceSuitability(VkPhysicalDevice device);
         static std::vector<const char *> getVulkanExtensions();
@@ -115,8 +132,12 @@ namespace fe {
     Renderer::~Renderer() {
         if (_pImpl->_debugMessenger)
             _pImpl->vkDestroyDebugUtilsMessengerEXT(_pImpl->_instance, _pImpl->_debugMessenger, nullptr);
-        vkDestroyInstance(_pImpl->_instance, nullptr);
-
+        if (_pImpl->_device)
+            vkDestroyDevice(_pImpl->_device, nullptr);
+        if (_pImpl->_surface)
+            vkDestroySurfaceKHR(_pImpl->_instance, _pImpl->_surface, nullptr);
+        if (_pImpl->_instance)
+            vkDestroyInstance(_pImpl->_instance, nullptr);
     }
 
     void Renderer::Render() {
@@ -127,7 +148,9 @@ namespace fe {
     int Renderer::Init() {
         _pImpl->createVulkanInstance();
         _pImpl->setupDebugMessenger();
+        _pImpl->createSurface();
         _pImpl->pickPhysicalDevice();
+        _pImpl->createLogicalDevice();
 
         return 0;
     }
@@ -156,6 +179,12 @@ namespace fe {
 
     }
 
+    void Renderer::Impl::createSurface() {
+        if (!SDL_Vulkan_CreateSurface(_pWindow, _instance, nullptr, &_surface)) {
+            throw std::runtime_error("Failed to create Vulkan surface!");
+        }
+    }
+
     void Renderer::Impl::pickPhysicalDevice() {
         uint32_t deviceCount = 0;
         vkEnumeratePhysicalDevices(_instance, &deviceCount, nullptr);
@@ -181,16 +210,84 @@ namespace fe {
         }
     }
 
+    void Renderer::Impl::createLogicalDevice() {
+        QueueFamilyIndices indices = findQueueFamilies(_physicalDevice);
+
+        std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+        std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+        float queuePriorities = 1.0f;
+
+        for (uint32_t queueFamily: uniqueQueueFamilies) {
+            VkDeviceQueueCreateInfo queueCreateInfo = {};
+            queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
+            queueCreateInfo.queueCount = 1;
+            queueCreateInfo.pQueuePriorities = &queuePriorities;
+            queueCreateInfos.push_back(queueCreateInfo);
+        }
+
+
+        VkPhysicalDeviceFeatures deviceFeatures = {};
+
+        VkDeviceCreateInfo createInfo = {};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        createInfo.pQueueCreateInfos = queueCreateInfos.data();
+        createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
+        createInfo.pEnabledFeatures = &deviceFeatures;
+        createInfo.enabledExtensionCount = 0;
+
+        if (enableValidationLayers) {
+            createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+            createInfo.ppEnabledLayerNames = validationLayers.data();
+        }
+        else {
+            createInfo.enabledLayerCount = 0;
+        }
+        if (vkCreateDevice(_physicalDevice, &createInfo, nullptr, &_device) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create logical device!");
+        }
+        vkGetDeviceQueue(_device, indices.graphicsFamily.value(), 0, &_graphicsQueue);
+        vkGetDeviceQueue(_device, indices.presentFamily.value(), 0, &_presentQueue);
+    }
+
+    Renderer::Impl::QueueFamilyIndices Renderer::Impl::findQueueFamilies(VkPhysicalDevice device) {
+        QueueFamilyIndices indices;
+        uint32_t queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+        int i = 0;
+        for (const auto &queueFamily: queueFamilies) {
+            VkBool32 presentSupport = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, _surface, &presentSupport);
+            if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+                indices.graphicsFamily = i;
+            }
+            if (presentSupport) {
+                indices.presentFamily = i;
+            }
+            if (indices.isComplete())
+                break;
+            i++;
+        }
+        return indices;
+    }
+
     int Renderer::Impl::rateDeviceSuitability(VkPhysicalDevice device) {
         int score = 0;
         VkPhysicalDeviceProperties properties;
         VkPhysicalDeviceFeatures features;
         vkGetPhysicalDeviceProperties(device, &properties);
         vkGetPhysicalDeviceFeatures(device, &features);
+        
+        QueueFamilyIndices indices = findQueueFamilies(device);
+        score += indices.isComplete() ? 1000 : 0;
+
         if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             score += 1000;
         }
-        score += properties.limits.maxImageDimension2D;
+        score += static_cast<int>(properties.limits.maxImageDimension2D);
 
         // can't run without geometry shaders
         if (!features.geometryShader) {
@@ -218,10 +315,11 @@ namespace fe {
         std::vector<VkExtensionProperties> availableExtensions(extensionCount);
         vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data());
 
-        std::cout << "Available Vulkan extensions:" << std::endl;
-        for (const auto &[extensionName, specVersion]: availableExtensions) {
-            std::cout << extensionName << std::endl;
-        }
+        //! Print out available extensions
+        // std::cout << "Available Vulkan extensions:" << std::endl;
+        // for (const auto &[extensionName, specVersion]: availableExtensions) {
+        //     std::cout << extensionName << std::endl;
+        // }
 
         std::cout << "Required Vulkan extensions:" << std::endl;
         for (const auto &extension: requiredExtensions) {

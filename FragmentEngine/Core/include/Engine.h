@@ -5,10 +5,27 @@
 #ifndef _ENGINE_H
 #define _ENGINE_H
 
+struct SDL_Window;
+
 namespace fe {
+    class Renderer;
+
     class Engine {
     public:
-        int Run(const char* title, int width, int height);
+        Engine(const char* title, int width, int height);
+        int Run();
+
+    private:
+        void initWindow();
+        void initRenderer();
+        void mainLoop();
+        void cleanup() const;
+
+        const char * m_title;
+        int m_width;
+        int m_height;
+        SDL_Window *m_window;
+        Renderer *m_renderer;
     };
 } // fe
 

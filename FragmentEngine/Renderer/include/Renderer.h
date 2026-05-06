@@ -1,34 +1,31 @@
-﻿//
+//
 // Created by davon on 5/4/2026.
 //
 
 #ifndef _RENDERER_H
 #define _RENDERER_H
-#include <complex.h>
-#include <vector>
-#include <vulkan/vulkan_core.h>
+#include <memory>
 
 struct SDL_Window;
-struct VkInstance_T;
-typedef struct VkInstance_T *VkInstance;
 
 namespace fe {
     class Renderer {
     public:
+
         Renderer(SDL_Window *window);
         ~Renderer();
-        void Render();
-
 
         int Init();
 
-        std::vector<const char *> getVulkanExtensions();
+
+        void Render();
 
     private:
-        void createVulkanInstance();
+        struct Impl;
+        std::unique_ptr<Impl> m_impl;
 
-        SDL_Window *m_window;
-        VkInstance m_instance{};
+        void setupDebugMessenger();
+
     };
 } // fe
 

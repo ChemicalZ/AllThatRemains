@@ -6,6 +6,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <SDL3/SDL_video.h>
 #include <iostream>
+#include <map>
 #include <stdexcept>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -22,13 +23,17 @@ constexpr bool enableValidationLayers = true;
 
 namespace fe {
     struct Renderer::Impl {
-        SDL_Window *window;
-        VkInstance instance{};
-        VkDebugUtilsMessengerEXT debugMessenger{};
-        VkAllocationCallbacks allocator{};
+        SDL_Window *_pWindow;
+        VkInstance _instance{};
+        VkDebugUtilsMessengerEXT _debugMessenger{};
+        VkAllocationCallbacks _allocator{};
+        VkPhysicalDevice _physicalDevice{};
 
         void createVulkanInstance();
+        void setupDebugMessenger();
+        void pickPhysicalDevice();
 
+        int rateDeviceSuitability(VkPhysicalDevice device);
         static std::vector<const char *> getVulkanExtensions();
 
         static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -73,9 +78,9 @@ namespace fe {
 
     void Renderer::Impl::vkDestroyDebugUtilsMessengerEXT(VkInstance instnace, VkDebugUtilsMessengerEXT messenger,
                                        const VkAllocationCallbacks *pAllocator) {
-        auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+        auto func = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(_instance, "vkDestroyDebugUtilsMessengerEXT"));
         if (func != nullptr) {
-            func(instance, messenger, pAllocator);
+            func(_instance, messenger, pAllocator);
         }
     }
 
@@ -99,27 +104,30 @@ namespace fe {
     }
 
     Renderer::Renderer(SDL_Window *window)
-        : m_impl(std::make_unique<Impl>()) {
-        m_impl->window = window;
-        m_impl->instance = VK_NULL_HANDLE;
-        m_impl->debugMessenger = VK_NULL_HANDLE;
+        : _pImpl(std::make_unique<Impl>()) {
+        _pImpl->_pWindow = window;
+        _pImpl->_instance = VK_NULL_HANDLE;
+        _pImpl->_debugMessenger = VK_NULL_HANDLE;
+        _pImpl->_physicalDevice = VK_NULL_HANDLE;
+
     }
 
     Renderer::~Renderer() {
-        if (m_impl->debugMessenger)
-            m_impl->vkDestroyDebugUtilsMessengerEXT(m_impl->instance, m_impl->debugMessenger, nullptr);
-        vkDestroyInstance(m_impl->instance, nullptr);
+        if (_pImpl->_debugMessenger)
+            _pImpl->vkDestroyDebugUtilsMessengerEXT(_pImpl->_instance, _pImpl->_debugMessenger, nullptr);
+        vkDestroyInstance(_pImpl->_instance, nullptr);
 
     }
 
     void Renderer::Render() {
-        if (!m_impl->window)
+        if (!_pImpl->_pWindow)
             return;
     }
 
     int Renderer::Init() {
-        m_impl->createVulkanInstance();
-        setupDebugMessenger();
+        _pImpl->createVulkanInstance();
+        _pImpl->setupDebugMessenger();
+        _pImpl->pickPhysicalDevice();
 
         return 0;
     }
@@ -137,15 +145,59 @@ namespace fe {
         return createInfo;
     }
 
-    void Renderer::setupDebugMessenger() {
+    void Renderer::Impl::setupDebugMessenger() {
         if constexpr (!enableValidationLayers)
             return;
         VkDebugUtilsMessengerCreateInfoEXT createInfo = {};
-        m_impl->populateDebugMessenegerCreateInfo(createInfo);
-        if ( Impl::CreateDebugUtilsMessengerEXT(m_impl->instance, &createInfo, nullptr, &m_impl->debugMessenger) != VK_SUCCESS) {
+        populateDebugMessenegerCreateInfo(createInfo);
+        if ( CreateDebugUtilsMessengerEXT(_instance, &createInfo, nullptr, &_debugMessenger) != VK_SUCCESS) {
             throw std::runtime_error("Failed to set up debug messenger!");
         }
 
+    }
+
+    void Renderer::Impl::pickPhysicalDevice() {
+        uint32_t deviceCount = 0;
+        vkEnumeratePhysicalDevices(_instance, &deviceCount, nullptr);
+        if (deviceCount == 0)
+            throw std::runtime_error("Failed to find GPUs with Vulkan support!");
+
+        std::vector<VkPhysicalDevice> devices(deviceCount);
+        vkEnumeratePhysicalDevices(_instance, &deviceCount, devices.data());
+
+        std::multimap<int, VkPhysicalDevice> candidates;
+        for (const auto &device: devices) {
+            int score = rateDeviceSuitability(device);
+            candidates.insert({score, device});
+        }
+        if (candidates.rbegin()-> first > 0) {
+            _physicalDevice = candidates.rbegin()->second;
+            VkPhysicalDeviceProperties properties;
+            vkGetPhysicalDeviceProperties(_physicalDevice, &properties);
+            std::cout << "Selected GPU: " << properties.deviceName << std::endl;
+        }
+        else {
+            throw std::runtime_error("Failed to find a suitable GPU!");
+        }
+    }
+
+    int Renderer::Impl::rateDeviceSuitability(VkPhysicalDevice device) {
+        int score = 0;
+        VkPhysicalDeviceProperties properties;
+        VkPhysicalDeviceFeatures features;
+        vkGetPhysicalDeviceProperties(device, &properties);
+        vkGetPhysicalDeviceFeatures(device, &features);
+        if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+            score += 1000;
+        }
+        score += properties.limits.maxImageDimension2D;
+
+        // can't run without geometry shaders
+        if (!features.geometryShader) {
+            return 0;
+        }
+
+        return score;
     }
 
     std::vector<const char *> Renderer::Impl::getVulkanExtensions() {
@@ -219,7 +271,7 @@ namespace fe {
             createInfo.enabledLayerCount = 0;
         }
 
-        if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS)
+        if (vkCreateInstance(&createInfo, nullptr, &_instance) != VK_SUCCESS)
             throw std::runtime_error("Failed to create Vulkan instance!");
     }
 } // fe

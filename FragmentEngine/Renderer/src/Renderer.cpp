@@ -65,6 +65,51 @@ namespace fe {
         return 0;
     }
 
+    std::vector<const char *> Renderer::getVulkanExtensions() {
+        Uint32 sdlExtensionCount = 0;
+        const char* const *sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
+
+        std::vector<const char*> requiredExtensions;
+        for (Uint32 i = 0; i < sdlExtensionCount; i++) {
+            requiredExtensions.push_back(sdlExtensions[i]);
+        }
+        if (enableValidationLayers) {
+            requiredExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+
+        // Add portability extensions
+        requiredExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+
+        // print a list of available extensions
+        uint32_t extensionCount = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data());
+
+        std::cout << "Available Vulkan extensions:" << std::endl;
+        for (const auto&[extensionName, specVersion] : availableExtensions) {
+            std::cout << extensionName << std::endl;
+        }
+
+        // Validate that required extensions are supported
+        std::cout << "Required Vulkan extensions:" << std::endl;
+        for (const auto &extension : requiredExtensions) {
+            // Check if supported extension
+            bool supported = false;
+            for (const auto&[name, version] : availableExtensions) {
+                if (strcmp(name, extension) == 0) {
+                    supported = true;
+                    break;
+                }
+            }
+            if (!supported) {
+                throw std::runtime_error("Required Vulkan extension not supported: " + std::string(extension));
+            }
+            std::cout << "Extension " << extension << " is supported." << std::endl;
+        }
+        return requiredExtensions;
+    }
+
     void Renderer::createVulkanInstance() {
         if (enableValidationLayers && !checkValidationLayerSupport()) {
             throw std::runtime_error("Validation layers requested, but not available!");
@@ -81,45 +126,15 @@ namespace fe {
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         createInfo.pApplicationInfo = &appInfo;
 
-        // Get extensions for use with SDL
-        Uint32 sdlExtensionCount = 0;
-        const char* const *sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
-        // Add extensions to a vector so that we can modify them
-        std::vector<const char*> requiredExtensions;
-        for (Uint32 i = 0; i < sdlExtensionCount; i++) {
-            requiredExtensions.push_back(sdlExtensions[i]);
-        }
-        // Add portability extensions
-        requiredExtensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+        // Setup Extensions
+        std::vector<const char *> requiredExtensions = getVulkanExtensions();
+        // Add portability flag
         createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
-        // print a list of available extensions
-        uint32_t extensionCount = 0;
-        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data());
-        std::cout << "Available Vulkan extensions:" << std::endl;
-        for (const auto&[extensionName, specVersion] : availableExtensions) {
-            std::cout << extensionName << std::endl;
-        }
-        std::cout << "Required Vulkan extensions:" << std::endl;
-        for (const auto &extension : requiredExtensions) {
-            // Check if supported extension
-            bool supported = false;
-            for (const auto&[name, version] : availableExtensions) {
-                if (strcmp(name, extension) == 0) {
-                    supported = true;
-                    break;
-                }
-            }
-            if (!supported) {
-                throw std::runtime_error("Required Vulkan extension not supported: " + std::string(extension));
-            }
-            std::cout << "Extension " << extension << " is supported." << std::endl;
-        }
         createInfo.enabledExtensionCount = static_cast<Uint32>(requiredExtensions.size());
         createInfo.ppEnabledExtensionNames = requiredExtensions.data();
-        // Vulkan: Global validation layers to enable
+
+        // Enable validation layers
         if (enableValidationLayers) {
             createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
             createInfo.ppEnabledLayerNames = validationLayers.data();

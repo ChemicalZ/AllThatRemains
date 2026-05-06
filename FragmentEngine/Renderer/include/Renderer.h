@@ -4,6 +4,9 @@
 
 #ifndef _RENDERER_H
 #define _RENDERER_H
+#include <complex.h>
+#include <vector>
+#include <vulkan/vulkan_core.h>
 
 struct SDL_Window;
 struct VkInstance_T;
@@ -18,6 +21,9 @@ namespace fe {
 
 
         int Init();
+
+        std::vector<const char *> getVulkanExtensions();
+
     private:
         void createVulkanInstance();
 

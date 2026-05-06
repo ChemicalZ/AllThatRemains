@@ -13,11 +13,16 @@ namespace fe {
     class Renderer {
     public:
         Renderer(SDL_Window *window);
+        ~Renderer();
         void Render();
+
+
         int Init();
     private:
+        void createVulkanInstance();
+
         SDL_Window *m_window;
-        VkInstance m_instance;
+        VkInstance m_instance{};
     };
 } // fe
 

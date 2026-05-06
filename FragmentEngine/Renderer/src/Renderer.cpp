@@ -40,6 +40,9 @@ namespace fe {
         VkQueue _graphicsQueue{};
         VkQueue _presentQueue{};
         VkSwapchainKHR _swapchain{};
+        std::vector<VkImage> _swapchainImages;
+        VkFormat _swapchainImageFormat;
+        VkExtent2D _swapchainExtent;
 
         struct QueueFamilyIndices {
             std::optional<uint32_t> graphicsFamily;
@@ -366,6 +369,11 @@ namespace fe {
         if (vkCreateSwapchainKHR(_device, &createInfo, nullptr, &_swapchain) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create swap chain!");
         }
+        vkGetSwapchainImagesKHR(_device, _swapchain, &imageCount, nullptr);
+        _swapchainImages.resize(imageCount);
+        vkGetSwapchainImagesKHR(_device, _swapchain, &imageCount, _swapchainImages.data());
+        _swapchainImageFormat = surfaceFormat.format;
+        _swapchainExtent = extent;
     }
 
     bool Renderer::Impl::checkDeviceExtensionSupport(VkPhysicalDevice device) {

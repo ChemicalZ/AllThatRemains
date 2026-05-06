@@ -16,6 +16,9 @@
 const std::vector<const char *> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
+const std::vector<const char *> deviceExtensions = {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME
+};
 
 #ifdef NDEBUG
 constexpr bool enableValidationLayers = false;
@@ -48,8 +51,8 @@ namespace fe {
         void pickPhysicalDevice();
         void createLogicalDevice();
 
+        bool checkDeviceExtensionSupport(VkPhysicalDevice device);
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
-
         int rateDeviceSuitability(VkPhysicalDevice device);
         static std::vector<const char *> getVulkanExtensions();
 
@@ -203,7 +206,7 @@ namespace fe {
             _physicalDevice = candidates.rbegin()->second;
             VkPhysicalDeviceProperties properties;
             vkGetPhysicalDeviceProperties(_physicalDevice, &properties);
-            std::cout << "Selected GPU: " << properties.deviceName << std::endl;
+            std::cout << "Selected GPU: " << properties.deviceName << "with a score of " << candidates.rbegin()->first << std::endl;
         }
         else {
             throw std::runtime_error("Failed to find a suitable GPU!");
@@ -233,8 +236,14 @@ namespace fe {
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         createInfo.pQueueCreateInfos = queueCreateInfos.data();
         createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
+
+        // ******
+        // This is where we want to enable devices
+        // *******
         createInfo.pEnabledFeatures = &deviceFeatures;
-        createInfo.enabledExtensionCount = 0;
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+        createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+
 
         if (enableValidationLayers) {
             createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
@@ -248,6 +257,18 @@ namespace fe {
         }
         vkGetDeviceQueue(_device, indices.graphicsFamily.value(), 0, &_graphicsQueue);
         vkGetDeviceQueue(_device, indices.presentFamily.value(), 0, &_presentQueue);
+    }
+
+    bool Renderer::Impl::checkDeviceExtensionSupport(VkPhysicalDevice device) {
+        uint32_t extensionCount;
+        vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+        vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
+        std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
+        for (const auto &extension: availableExtensions) {
+            requiredExtensions.erase(extension.extensionName);
+        }
+        return requiredExtensions.empty();
     }
 
     Renderer::Impl::QueueFamilyIndices Renderer::Impl::findQueueFamilies(VkPhysicalDevice device) {
@@ -280,7 +301,11 @@ namespace fe {
         VkPhysicalDeviceFeatures features;
         vkGetPhysicalDeviceProperties(device, &properties);
         vkGetPhysicalDeviceFeatures(device, &features);
-        
+
+        // check device for extensions
+        if (!checkDeviceExtensionSupport(device)) {
+            return 0;
+        }
         QueueFamilyIndices indices = findQueueFamilies(device);
         score += indices.isComplete() ? 1000 : 0;
 
@@ -315,13 +340,13 @@ namespace fe {
         std::vector<VkExtensionProperties> availableExtensions(extensionCount);
         vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, availableExtensions.data());
 
-        //! Print out available extensions
-        // std::cout << "Available Vulkan extensions:" << std::endl;
+        // // Print out available extensions
+        // std::cout << "Available Vulkan Instance extensions:" << std::endl;
         // for (const auto &[extensionName, specVersion]: availableExtensions) {
         //     std::cout << extensionName << std::endl;
         // }
 
-        std::cout << "Required Vulkan extensions:" << std::endl;
+        std::cout << "Required Vulkan Instance extensions:" << std::endl;
         for (const auto &extension: requiredExtensions) {
             bool supported = false;
             for (const auto &[name, version]: availableExtensions) {

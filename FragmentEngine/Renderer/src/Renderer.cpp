@@ -43,6 +43,7 @@ namespace fe {
         std::vector<VkImage> _swapchainImages;
         VkFormat _swapchainImageFormat;
         VkExtent2D _swapchainExtent;
+        std::vector<VkImageView> _swapchainImageViews;
 
         struct QueueFamilyIndices {
             std::optional<uint32_t> graphicsFamily;
@@ -60,6 +61,7 @@ namespace fe {
         void pickPhysicalDevice();
         void createLogicalDevice();
         void createSwapChain(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
+        void createImageViews();
 
         bool checkDeviceExtensionSupport(VkPhysicalDevice device);
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
@@ -177,6 +179,8 @@ namespace fe {
     }
 
     Renderer::~Renderer() {
+        for (auto imageView : _pImpl->_swapchainImageViews)
+            vkDestroyImageView(_pImpl->_device, imageView, nullptr);
         if (_pImpl->_swapchain)
             vkDestroySwapchainKHR(_pImpl->_device, _pImpl->_swapchain, nullptr);
         if (_pImpl->_device)
@@ -374,6 +378,30 @@ namespace fe {
         vkGetSwapchainImagesKHR(_device, _swapchain, &imageCount, _swapchainImages.data());
         _swapchainImageFormat = surfaceFormat.format;
         _swapchainExtent = extent;
+    }
+
+    void Renderer::Impl::createImageViews() {
+        _swapchainImageViews.resize(_swapchainImages.size());
+
+        for (size_t i = 0; i < _swapchainImages.size(); i++) {
+            VkImageViewCreateInfo createInfo = {};
+            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            createInfo.image = _swapchainImages[i];
+            createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            createInfo.format = _swapchainImageFormat;
+            createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+            createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            createInfo.subresourceRange.baseMipLevel = 0;
+            createInfo.subresourceRange.levelCount = 1;
+            createInfo.subresourceRange.baseArrayLayer = 0;
+            createInfo.subresourceRange.layerCount = 1;
+            if (vkCreateImageView(_device, &createInfo, nullptr, &_swapchainImageViews[i]) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to create image views!");
+            }
+        }
     }
 
     bool Renderer::Impl::checkDeviceExtensionSupport(VkPhysicalDevice device) {

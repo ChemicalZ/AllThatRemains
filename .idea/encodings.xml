@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="Encoding" addBOMForNewFiles="with BOM under Windows, with no BOM otherwise">
-    <file url="file://$PROJECT_DIR$/AllThatRemains/CMakeLists.txt" charset="UTF-8" />
+  <component name="Encoding" native2AsciiForPropertiesFiles="true">
     <file url="file://$PROJECT_DIR$/AllThatRemains/CMakeLists.txt" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/AllThatRemains/src/main.cpp" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/FragmentEngine/Renderer/shaders/compile.bat" charset="UTF-8" />
+    <file url="PROJECT" charset="UTF-8" />
   </component>
 </project>

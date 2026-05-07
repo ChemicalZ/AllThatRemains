@@ -17,8 +17,9 @@ namespace fe {
 
         int Init();
 
+        void drawFrame();
 
-        void Render();
+        void waitIdle();
 
     private:
         struct Impl;

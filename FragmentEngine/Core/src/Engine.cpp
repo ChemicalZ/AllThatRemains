@@ -23,6 +23,7 @@ namespace fe {
             cleanup();
             return EXIT_FAILURE;
         }
+        m_renderer->waitIdle();
         cleanup();
 
         return EXIT_SUCCESS;
@@ -60,6 +61,7 @@ namespace fe {
 
             }
 
+            m_renderer->drawFrame();
         }
     }
 

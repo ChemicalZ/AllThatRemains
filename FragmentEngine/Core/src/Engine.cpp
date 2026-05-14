@@ -3,7 +3,7 @@
 #include <exception>
 #include <stdexcept>
 #include <SDL3/SDL.h>
-
+#include <string>
 #include "Renderer.h"
 
 namespace fe {

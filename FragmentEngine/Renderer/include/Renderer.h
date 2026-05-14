@@ -2,8 +2,7 @@
 // Created by davon on 5/4/2026.
 //
 
-#ifndef _RENDERER_H
-#define _RENDERER_H
+#pragma once
 
 struct SDL_Window;
 struct VkInstance_T;
@@ -20,5 +19,3 @@ namespace fe {
         VkInstance m_instance;
     };
 } // fe
-
-#endif //_RENDERER_H

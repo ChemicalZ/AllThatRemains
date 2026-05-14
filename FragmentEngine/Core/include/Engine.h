@@ -2,8 +2,7 @@
 // Created by davon on 5/4/2026.
 //
 
-#ifndef _ENGINE_H
-#define _ENGINE_H
+#pragma once
 
 struct SDL_Window;
 
@@ -28,5 +27,3 @@ namespace fe {
         Renderer *m_renderer;
     };
 } // fe
-
-#endif //_ENGINE_H

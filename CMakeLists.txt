@@ -12,8 +12,11 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_SOURCE_DIR}/build/lib/debug)
 
 find_package(SDL3 REQUIRED)
 find_package(VulkanMemoryAllocator REQUIRED)
-find_package(VulkanLoader REQUIRED)
-find_package(VulkanHeaders REQUIRED)
+find_package(volk REQUIRED)
+find_package(Vulkan REQUIRED)
+find_package(spdlog REQUIRED)
+find_package(glm REQUIRED)
+find_package(fmt REQUIRED)
 
 add_subdirectory(FragmentEngine)
 add_subdirectory(AllThatRemains)

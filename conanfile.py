@@ -10,9 +10,11 @@ class MyProjectConan(ConanFile):
 
     def requirements(self):
         self.requires("sdl/3.4.0")       # SDL3 from Conan Center
-        self.requires("vulkan-headers/1.4.313.0")
-        self.requires("vulkan-loader/1.4.313.0")
+        self.requires("volk/1.3.268.0")
         self.requires("vulkan-memory-allocator/3.3.0")
+        self.requires("spdlog/1.17.0")
+        self.requires("glm/1.0.1")
+        self.requires("fmt/12.1.0")
 
     def configure(self):
         self.options["sdl"].shared = True

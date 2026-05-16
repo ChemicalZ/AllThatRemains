@@ -3,6 +3,7 @@
 //
 
 #pragma once
+#include <SDL3/SDL_events.h>
 
 struct SDL_Window;
 
@@ -17,6 +18,9 @@ namespace fe {
     private:
         void initWindow();
         void initRenderer();
+
+        void handle_events(bool &running, bool &stop_rendering);
+
         void mainLoop();
         void cleanup() const;
 

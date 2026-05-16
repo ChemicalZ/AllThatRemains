@@ -3,10 +3,10 @@
 //
 
 #include "Renderer.h"
+#include <volk.h>
 #include <SDL3/SDL_vulkan.h>
 #include <SDL3/SDL_video.h>
 #include <iostream>
-#include <vulkan/vulkan.h>
 
 
 
@@ -23,6 +23,10 @@ namespace fe {
     }
 
     int Renderer::Init() {
+        if (volkInitialize() != VK_SUCCESS) {
+            throw std::runtime_error("Failed to initialize Volk!");
+        }
+
         VkApplicationInfo appInfo = {};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         appInfo.pApplicationName = "FeApplication";
@@ -46,6 +50,8 @@ namespace fe {
         if (vkCreateInstance(&createInfo, nullptr, &m_instance) != VK_SUCCESS) {
             throw std::runtime_error("Failed to create Vulkan instance!");
         }
+
+        volkLoadInstance(m_instance);
 
         return 0;
     }

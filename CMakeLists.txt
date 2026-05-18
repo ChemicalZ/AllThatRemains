@@ -17,6 +17,7 @@ find_package(Vulkan REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(glm REQUIRED)
 find_package(fmt REQUIRED)
+find_package(vkbootstrap REQUIRED)
 
 add_subdirectory(FragmentEngine)
 add_subdirectory(AllThatRemains)

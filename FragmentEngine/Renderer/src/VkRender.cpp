@@ -23,6 +23,7 @@ namespace fe {
         init_sync_structures();
         init_descriptors();
         init_pipelines();
+        init_imgui();
 
         _isInitialized = true;
         FE_CORE_LOG("Vulkan Renderer successfully initialized");
@@ -96,6 +97,24 @@ namespace fe {
         //finalize the command buffer (we can no longer add commands, but it can now be executed)
         VK_CHECK(vkEndCommandBuffer(cmd));
 
+        // IMGUI
+
+        // execute a copy from the draw image into the swapchain
+        vkutil::copy_image_to_image(cmd, _drawImage.image, _swapchainImages[swapchainImageIndex], _drawExtent, _swapchainExtent);
+
+        // set swapchain image layout to Attachment Optimal so we can draw it
+        vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+        //draw imgui into the swapchain image
+        draw_imgui(cmd,  _swapchainImageViews[swapchainImageIndex]);
+
+        // set swapchain image layout to Present so we can draw it
+        vkutil::transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+        //finalize the command buffer (we can no longer add commands, but it can now be executed)
+        VK_CHECK(vkEndCommandBuffer(cmd));
+
+    // END IMGUI
 
         //prepare the submission to the queue. 
         //we want to wait on the _presentSemaphore, as that semaphore is signaled when the swapchain is ready
@@ -149,6 +168,17 @@ namespace fe {
 
         // execute the compute pipeline dispatch. We are using 16x16 workgroup size so we need to divide by it
         vkCmdDispatch(cmd, std::ceil(_drawExtent.width / 16.0), std::ceil(_drawExtent.height / 16.0), 1);
+    }
+    void VkRender::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView)
+    {
+        VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingInfo renderInfo = vkinit::rendering_info(_swapchainExtent, &colorAttachment, nullptr);
+
+        vkCmdBeginRendering(cmd, &renderInfo);
+
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+
+        vkCmdEndRendering(cmd);
     }
     void VkRender::init_vulkan() {
         vkb::InstanceBuilder builder;
@@ -231,7 +261,7 @@ namespace fe {
         drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
         drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-        VkImageCreateInfo rimg_info = vkinit::image_create_info(_drawImage.imageFormat, drawImageUsages, drawImageExtent);
+        VkImageCreateInfo rimg_info = image_create_info(_drawImage.imageFormat, drawImageUsages, drawImageExtent);
 
         //for the draw image, we want to allocate it from gpu local memory
         VmaAllocationCreateInfo rimg_allocinfo = {};
@@ -242,7 +272,7 @@ namespace fe {
         vmaCreateImage(_allocator, &rimg_info, &rimg_allocinfo, &_drawImage.image, &_drawImage.allocation, nullptr);
 
         //build a image-view for the draw image to use for rendering
-        VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(_drawImage.imageFormat, _drawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+        VkImageViewCreateInfo rview_info = imageview_create_info(_drawImage.imageFormat, _drawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
         VK_CHECK(vkCreateImageView(_device, &rview_info, nullptr, &_drawImage.imageView));
 
@@ -275,11 +305,23 @@ namespace fe {
             cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 
             VK_CHECK(vkAllocateCommandBuffers(_device, &cmdAllocInfo, &_frames[i]._mainCommandBuffer));
-	}
+	    }
+
+        // IMGUI
+        VK_CHECK(vkCreateCommandPool(_device, &commandPoolInfo, nullptr, &_immCommandPool));
+
+        // allocate the command buffer for immediate submits
+        VkCommandBufferAllocateInfo cmdAllocInfo = command_buffer_allocate_info(_immCommandPool, 1);
+
+        VK_CHECK(vkAllocateCommandBuffers(_device, &cmdAllocInfo, &_immCommandBuffer));
+
+        _mainDeletionQueue.push_function([=]() { 
+        vkDestroyCommandPool(_device, _immCommandPool, nullptr);
+        });
     }
     void VkRender::init_sync_structures() {
         VkFenceCreateInfo fenceCreateInfo = fence_create_info(VK_FENCE_CREATE_SIGNALED_BIT);
-        VkSemaphoreCreateInfo semaphoreCreateInfo = vkinit::semaphore_create_info();
+        VkSemaphoreCreateInfo semaphoreCreateInfo = semaphore_create_info();
 
         for (int i = 0; i < FRAME_OVERLAP; i++) {
             VK_CHECK(vkCreateFence(_device, &fenceCreateInfo, nullptr, &_frames[i]._renderFence));
@@ -287,6 +329,10 @@ namespace fe {
             VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frames[i]._swapchainSemaphore));
             VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frames[i]._renderSemaphore));
         }
+
+        // IMGUI
+        VK_CHECK(vkCreateFence(_device, &fenceCreateInfo, nullptr, &_immFence));
+	    _mainDeletionQueue.push_function([=]() { vkDestroyFence(_device, _immFence, nullptr); });
         
     }
 
@@ -377,6 +423,70 @@ namespace fe {
             });
     }
 
+    void VulkanEngine::init_imgui()
+    {
+        // 1: create descriptor pool for IMGUI
+        //  the size of the pool is very oversize, but it's copied from imgui demo
+        //  itself.
+        VkDescriptorPoolSize pool_sizes[] = { { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+            { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 } };
+
+        VkDescriptorPoolCreateInfo pool_info = {};
+        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        pool_info.maxSets = 1000;
+        pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
+        pool_info.pPoolSizes = pool_sizes;
+
+        VkDescriptorPool imguiPool;
+        VK_CHECK(vkCreateDescriptorPool(_device, &pool_info, nullptr, &imguiPool));
+
+        // 2: initialize imgui library
+
+        // this initializes the core structures of imgui
+        ImGui::CreateContext();
+
+        // this initializes imgui for SDL
+        ImGui_ImplSDL2_InitForVulkan(_window);
+
+        // this initializes imgui for Vulkan
+        ImGui_ImplVulkan_InitInfo init_info = {};
+        init_info.Instance = _instance;
+        init_info.PhysicalDevice = _chosenGPU;
+        init_info.Device = _device;
+        init_info.Queue = _graphicsQueue;
+        init_info.DescriptorPool = imguiPool;
+        init_info.MinImageCount = 3;
+        init_info.ImageCount = 3;
+        init_info.UseDynamicRendering = true;
+
+        //dynamic rendering parameters for imgui to use
+        init_info.PipelineRenderingCreateInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &_swapchainImageFormat;
+        
+
+        init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+        ImGui_ImplVulkan_Init(&init_info);
+
+        ImGui_ImplVulkan_CreateFontsTexture();
+
+        // add the destroy the imgui created structures
+        _mainDeletionQueue.push_function([=]() {
+            ImGui_ImplVulkan_Shutdown();
+            vkDestroyDescriptorPool(_device, imguiPool, nullptr);
+        });
+    }
     void VkRender::create_swapchain(uint32_t width, uint32_t height){
         vkb::SwapchainBuilder swapchainBuilder{ _chosenGPU,_device,_surface };
 
@@ -408,5 +518,30 @@ namespace fe {
 
             vkDestroyImageView(_device, _swapchainImageViews[i], nullptr);
         }
+    }
+
+    void VkRender::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function)
+    {
+        VK_CHECK(vkResetFences(_device, 1, &_immFence));
+        VK_CHECK(vkResetCommandBuffer(_immCommandBuffer, 0));
+
+        VkCommandBuffer cmd = _immCommandBuffer;
+
+        VkCommandBufferBeginInfo cmdBeginInfo = command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+        VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
+
+        function(cmd);
+
+        VK_CHECK(vkEndCommandBuffer(cmd));
+
+        VkCommandBufferSubmitInfo cmdinfo = command_buffer_submit_info(cmd);
+        VkSubmitInfo2 submit = submit_info(&cmdinfo, nullptr, nullptr);
+
+        // submit command buffer to the queue and execute it.
+        //  _renderFence will now block until the graphic commands finish execution
+        VK_CHECK(vkQueueSubmit2(_graphicsQueue, 1, &submit, _immFence));
+
+        VK_CHECK(vkWaitForFences(_device, 1, &_immFence, true, 9999999999));
     }
 }

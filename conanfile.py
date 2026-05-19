@@ -19,6 +19,7 @@ class MyProjectConan(ConanFile):
         # self.requires("vk-bootstrap/1.3.296")
         self.requires("vk-bootstrap/1.3.296", override="vulkan-headers/1.4.313.0")
         self.requires("imgui/1.92.7")
+        self.requires("fastgltf/0.9.0")
 
 
     def configure(self):

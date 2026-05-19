@@ -19,6 +19,7 @@ find_package(glm REQUIRED)
 find_package(fmt REQUIRED)
 find_package(vk-bootstrap REQUIRED)
 find_package(imgui REQUIRED)
+find_package(fastgltf REQUIRED)
 
 add_subdirectory(FragmentEngine)
 add_subdirectory(AllThatRemains)

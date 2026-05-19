@@ -52,7 +52,7 @@ namespace fe {
         pool_info.poolSizeCount = (uint32_t)poolSizes.size();
         pool_info.pPoolSizes = poolSizes.data();
 
-        vkCreateDescriptorPool(device, &pool_info, nullptr, &pool);
+        VK_CHECK(vkCreateDescriptorPool(device, &pool_info, nullptr, &pool));
     }
 
     void DescriptorAllocator::clear_descriptors(VkDevice device)
@@ -199,7 +199,7 @@ namespace fe {
         pool_info.pPoolSizes = poolSizes.data();
 
         VkDescriptorPool newPool;
-        vkCreateDescriptorPool(device, &pool_info, nullptr, &newPool);
+        VK_CHECK(vkCreateDescriptorPool(device, &pool_info, nullptr, &newPool));
         return newPool;
     }
 

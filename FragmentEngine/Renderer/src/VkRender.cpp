@@ -684,7 +684,7 @@ void VkRender::init_background_pipelines() {
     auto make_compute_effect = [&](const char* name, const char* shaderPath, ComputePushConstants defaultData) -> ComputeEffect {
         VkShaderModule shaderModule;
         if (!load_shader_module(shaderPath, _device, &shaderModule)) {
-            FE_CORE_ERROR("Error loading compute shader");
+            FE_CORE_CRITICAL("Failed to load compute shader: {}", shaderPath);
         }
 
         VkPipelineShaderStageCreateInfo stageinfo {};
@@ -762,11 +762,11 @@ void VkRender::init_default_data() {
     VkSamplerCreateInfo sampl = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sampl.magFilter = VK_FILTER_NEAREST;
     sampl.minFilter = VK_FILTER_NEAREST;
-    vkCreateSampler(_device, &sampl, nullptr, &_defaultSamplerNearest);
+    VK_CHECK(vkCreateSampler(_device, &sampl, nullptr, &_defaultSamplerNearest));
 
     sampl.magFilter = VK_FILTER_LINEAR;
     sampl.minFilter = VK_FILTER_LINEAR;
-    vkCreateSampler(_device, &sampl, nullptr, &_defaultSamplerLinear);
+    VK_CHECK(vkCreateSampler(_device, &sampl, nullptr, &_defaultSamplerLinear));
 
     _mainDeletionQueue.push_function([this]() {
         destroy_image(_whiteImage);
@@ -831,12 +831,12 @@ void VkRender::resize_swapchain() {
 void GLTFMetallic_Roughness::build_pipelines(VkRender* renderer) {
     VkShaderModule meshFragShader;
     if (!load_shader_module("../shaders/mesh_pbr.frag.spv", renderer->_device, &meshFragShader)) {
-        FE_CORE_ERROR("Error loading mesh fragment shader");
+        FE_CORE_CRITICAL("Failed to load mesh fragment shader");
     }
 
     VkShaderModule meshVertexShader;
     if (!load_shader_module("../shaders/mesh.vert.spv", renderer->_device, &meshVertexShader)) {
-        FE_CORE_ERROR("Error loading mesh vertex shader");
+        FE_CORE_CRITICAL("Failed to load mesh vertex shader");
     }
 
     VkPushConstantRange matrixRange {};
@@ -904,7 +904,7 @@ void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx) {
     glm::mat4 nodeMatrix = topMatrix * worldTransform;
 
     for (auto& s : mesh->surfaces) {
-        RenderObject def;
+        RenderObject def;~
         def.indexCount          = s.count;
         def.firstIndex          = s.startIndex;
         def.indexBuffer         = mesh->meshBuffers.indexBuffer.buffer;

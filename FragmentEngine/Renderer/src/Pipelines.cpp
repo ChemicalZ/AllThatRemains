@@ -52,10 +52,7 @@ namespace fe {
         pipelineInfo.pDynamicState = &dynamicInfo;
 
         VkPipeline newPipeline;
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &newPipeline) != VK_SUCCESS) {
-            fmt::println("failed to create pipeline");
-            return VK_NULL_HANDLE;
-        }
+        VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &newPipeline));
         return newPipeline;
     }
 

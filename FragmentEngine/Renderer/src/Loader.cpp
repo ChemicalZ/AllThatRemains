@@ -15,7 +15,8 @@
 #include <fastgltf/tools.hpp>
 #include <fastgltf/util.hpp>
 
-#include <iostream>
+
+#include "LogInternal.h"
 
 namespace fe {
 
@@ -129,7 +130,7 @@ static VkSamplerMipmapMode extract_mipmap_mode(fastgltf::Filter filter)
 
 std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::string_view filePath)
 {
-    fmt::print("Loading GLTF: {}", filePath);
+    FE_CORE_INFO("Loading GLTF: {}", filePath);
 
     std::shared_ptr<LoadedGLTF> scene = std::make_shared<LoadedGLTF>();
     scene->creator = renderer;
@@ -144,13 +145,13 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
     std::filesystem::path path = filePath;
     auto data = fastgltf::GltfDataBuffer::FromPath(path);
     if (!data) {
-        std::cerr << "Failed to load GLTF file: " << fastgltf::getErrorName(data.error()) << "\n";
+        FE_CORE_ERROR("Failed to load GLTF file '{}': {}", filePath, fastgltf::getErrorName(data.error()));
         return {};
     }
 
     auto asset = parser.loadGltf(data.get(), path.parent_path(), gltfOptions);
     if (auto error = asset.error(); error != fastgltf::Error::None) {
-        std::cerr << "Failed to parse GLTF: " << fastgltf::getErrorName(error) << "\n";
+        FE_CORE_ERROR("Failed to parse GLTF '{}': {}", filePath, fastgltf::getErrorName(error));
         return {};
     }
 
@@ -174,7 +175,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
         sampl.mipmapMode = extract_mipmap_mode(sampler.minFilter.value_or(fastgltf::Filter::Nearest));
 
         VkSampler newSampler;
-        vkCreateSampler(renderer->_device, &sampl, nullptr, &newSampler);
+        VK_CHECK(vkCreateSampler(renderer->_device, &sampl, nullptr, &newSampler));
         file.samplers.push_back(newSampler);
     }
 
@@ -191,7 +192,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
             file.images[image.name.c_str()] = *img;
         } else {
             images.push_back(renderer->_errorCheckerboardImage);
-            std::cout << "Failed to load texture: " << image.name << "\n";
+            FE_CORE_WARN("Failed to load texture '{}', using error checkerboard", image.name);
         }
     }
 

@@ -15,6 +15,7 @@ class MyProjectConan(ConanFile):
         self.requires("spdlog/1.17.0")
         self.requires("glm/1.0.1")
         self.requires("fmt/12.1.0")
+        self.requires("vk-bootstrap/1.3.296")
 
     def configure(self):
         self.options["sdl"].shared = True

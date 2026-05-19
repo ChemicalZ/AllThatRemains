@@ -11,7 +11,6 @@ target_compile_definitions(FragmentCore PUBLIC SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_
 
 target_link_libraries(FragmentCore
         sdl::sdl
-        spdlog::spdlog
         FragmentLog
         FragmentRenderer
 )

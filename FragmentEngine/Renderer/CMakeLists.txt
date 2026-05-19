@@ -22,4 +22,7 @@ target_link_libraries(FragmentRenderer PUBLIC
         volk::volk
         GPUOpen::VulkanMemoryAllocator
         fmt::fmt
+        vkbootstrap::vkbootstrap
+        FragmentLog
+
 )

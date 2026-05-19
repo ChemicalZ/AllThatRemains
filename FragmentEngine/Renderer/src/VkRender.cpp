@@ -1,3 +1,4 @@
+#include <volk.h>
 #include "VkRender.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -7,6 +8,11 @@
 #include "Pipelines.h"
 #include "Initializers.h"
 
+// VMA is used with Volk/VK_NO_PROTOTYPES. In newer VMA versions, dynamic
+// Vulkan functions require vkGetInstanceProcAddr and vkGetDeviceProcAddr to be
+// passed through VmaAllocatorCreateInfo::pVulkanFunctions.
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 #include "VkBootstrap.h"
@@ -443,6 +449,8 @@ void VkRender::destroy_buffer(const AllocatedBuffer& buffer) {
 // ─── Init functions ────────────────────────────────────────────────────────
 
 void VkRender::init_vulkan() {
+    VK_CHECK(volkInitialize());
+
     vkb::InstanceBuilder builder;
     auto inst_ret = builder.set_app_name("FragmentEngine Application")
         .request_validation_layers(bUseValidationLayers)
@@ -451,9 +459,14 @@ void VkRender::init_vulkan() {
         .build();
 
     vkb::Instance vkb_inst = inst_ret.value();
-    _instance       = vkb_inst.instance;
+    _instance        = vkb_inst.instance;
     _debug_messenger = vkb_inst.debug_messenger;
-    SDL_Vulkan_CreateSurface(_window, _instance, nullptr, &_surface);
+
+    volkLoadInstance(_instance);
+
+    if (!SDL_Vulkan_CreateSurface(_window, _instance, nullptr, &_surface)) {
+        throw std::runtime_error("SDL_Vulkan_CreateSurface failed: " + std::string(SDL_GetError()));
+    }
 
     VkPhysicalDeviceVulkan13Features features13 {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     features13.dynamicRendering = true;
@@ -481,19 +494,28 @@ void VkRender::init_vulkan() {
     _device    = vkbDevice.device;
     _chosenGPU = physicalDevice.physical_device;
 
+    volkLoadDevice(_device);
+
     _graphicsQueue       = vkbDevice.get_queue(vkb::QueueType::graphics).value();
     _graphicsQueueFamily = vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
 
+    VmaVulkanFunctions vmaFunctions = {};
+    vmaFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    vmaFunctions.vkGetDeviceProcAddr   = vkGetDeviceProcAddr;
+
     VmaAllocatorCreateInfo allocatorInfo = {};
-    allocatorInfo.physicalDevice = _chosenGPU;
-    allocatorInfo.device         = _device;
-    allocatorInfo.instance       = _instance;
-    allocatorInfo.flags          = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-    vmaCreateAllocator(&allocatorInfo, &_allocator);
+    allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3;
+    allocatorInfo.physicalDevice   = _chosenGPU;
+    allocatorInfo.device           = _device;
+    allocatorInfo.instance         = _instance;
+    allocatorInfo.flags            = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    allocatorInfo.pVulkanFunctions = &vmaFunctions;
+    VK_CHECK(vmaCreateAllocator(&allocatorInfo, &_allocator));
 
     _mainDeletionQueue.push_function([this]() {
         vmaDestroyAllocator(_allocator);
     });
+    FE_CORE_INFO("Vulkan initialized");
 }
 
 void VkRender::init_swapchain() {
@@ -510,7 +532,7 @@ void VkRender::init_swapchain() {
     VmaAllocationCreateInfo rimg_allocinfo = {};
     rimg_allocinfo.usage         = VMA_MEMORY_USAGE_GPU_ONLY;
     rimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vmaCreateImage(_allocator, &rimg_info, &rimg_allocinfo, &_drawImage.image, &_drawImage.allocation, nullptr);
+    VK_CHECK(vmaCreateImage(_allocator, &rimg_info, &rimg_allocinfo, &_drawImage.image, &_drawImage.allocation, nullptr));
 
     VkImageViewCreateInfo rview_info = imageview_create_info(_drawImage.imageFormat, _drawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
     VK_CHECK(vkCreateImageView(_device, &rview_info, nullptr, &_drawImage.imageView));
@@ -520,7 +542,7 @@ void VkRender::init_swapchain() {
 
     VkImageUsageFlags depthImageUsages = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     VkImageCreateInfo dimg_info = image_create_info(_depthImage.imageFormat, depthImageUsages, drawImageExtent);
-    vmaCreateImage(_allocator, &dimg_info, &rimg_allocinfo, &_depthImage.image, &_depthImage.allocation, nullptr);
+    VK_CHECK(vmaCreateImage(_allocator, &dimg_info, &rimg_allocinfo, &_depthImage.image, &_depthImage.allocation, nullptr));
 
     VkImageViewCreateInfo dview_info = imageview_create_info(_depthImage.imageFormat, _depthImage.image, VK_IMAGE_ASPECT_DEPTH_BIT);
     VK_CHECK(vkCreateImageView(_device, &dview_info, nullptr, &_depthImage.imageView));

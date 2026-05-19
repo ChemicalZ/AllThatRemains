@@ -19,11 +19,8 @@
 #include <chrono>
 #include <cmath>
 
-#ifdef DEBUG
+
 constexpr bool bUseValidationLayers = true;
-#else
-constexpr bool bUseValidationLayers = false;
-#endif
 
 namespace fe {
 

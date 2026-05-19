@@ -85,7 +85,6 @@ namespace fe {
                 FE_CORE_INFO("Window shown");
                 stop_rendering = false;
             }
-            ImGui_ImplSDL3_ProcessEvent(&e);
 
         }
     }
@@ -102,17 +101,6 @@ namespace fe {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
-
-            // imgui new frame
-            ImGui_ImplVulkan_NewFrame();
-            ImGui_ImplSDL3_NewFrame();
-            ImGui::NewFrame();
-
-            //some imgui UI to test
-            ImGui::ShowDemoWindow();
-
-            //make imgui calculate internal draw structures
-            ImGui::Render();
             m_renderer->Render();
         }
         FE_CORE_INFO("Main loop ended");

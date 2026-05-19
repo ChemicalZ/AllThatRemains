@@ -5,8 +5,7 @@
 #include <SDL3/SDL.h>
 #include <string>
 #include "../../Log/include/LogInternal.h"
-#include "Renderer.h"
-
+#include "VkRender.h"
 namespace fe {
     Engine::Engine(const char *title, const int width, const int height): m_title(title), m_width(width),
                                                                           m_height(height) {
@@ -46,9 +45,9 @@ namespace fe {
     }
 
     void Engine::initRenderer() {
-        m_renderer = new Renderer(m_window);
+
         try {
-            m_renderer->Init();
+            m_renderer = new VkRender(m_window);
         } catch (std::exception &e) {
             throw std::runtime_error("Renderer failed to initialize: " + std::string(e.what()));
         }
@@ -101,7 +100,7 @@ namespace fe {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
-            m_renderer->Render();
+            m_renderer->Draw();
         }
         FE_CORE_INFO("Main loop ended");
     }

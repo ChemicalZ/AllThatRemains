@@ -1,7 +1,7 @@
 ﻿
 
 add_library(FragmentRenderer STATIC
-        src/Renderer.cpp
+        src/VkRender.cpp
         src/Initializers.cpp
         src/Descriptors.cpp
         src/Loader.cpp
@@ -18,11 +18,10 @@ target_compile_definitions(FragmentRenderer PUBLIC SPDLOG_ACTIVE_LEVEL=SPDLOG_LE
 target_link_libraries(FragmentRenderer PUBLIC
         sdl::sdl
         glm::glm
-        Vulkan::Vulkan
         volk::volk
         GPUOpen::VulkanMemoryAllocator
         fmt::fmt
-        vkbootstrap::vkbootstrap
+        vk-bootstrap::vk-bootstrap
         FragmentLog
-
+        imgui::imgui
 )

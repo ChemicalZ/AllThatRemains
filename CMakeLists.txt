@@ -9,7 +9,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/build/lib/release
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_SOURCE_DIR}/build/lib/debug)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/build/lib/release)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_SOURCE_DIR}/build/lib/debug)
-
+add_compile_definitions(VULKAN_HPP_NO_TO_STRING)
 find_package(SDL3 REQUIRED)
 find_package(VulkanMemoryAllocator REQUIRED)
 find_package(volk REQUIRED)
@@ -17,7 +17,9 @@ find_package(Vulkan REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(glm REQUIRED)
 find_package(fmt REQUIRED)
-find_package(vkbootstrap REQUIRED)
+find_package(vk-bootstrap REQUIRED)
+find_package(imgui REQUIRED)
 
 add_subdirectory(FragmentEngine)
 add_subdirectory(AllThatRemains)
+

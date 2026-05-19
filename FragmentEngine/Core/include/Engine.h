@@ -8,7 +8,7 @@
 struct SDL_Window;
 
 namespace fe {
-    class Renderer;
+    class VkRender;
 
     class Engine {
     public:
@@ -28,6 +28,6 @@ namespace fe {
         int m_width;
         int m_height;
         SDL_Window *m_window;
-        Renderer *m_renderer;
+        VkRender *m_renderer;
     };
 } // fe

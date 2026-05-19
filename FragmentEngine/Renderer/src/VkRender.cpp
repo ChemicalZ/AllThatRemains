@@ -6,8 +6,15 @@
 #include "Pipelines.h"
 
 #define VMA_IMPLEMENTATION
+#include <SDL3/SDL_vulkan.h>
+#include "VkBootstrap.h"
 #include "vk_mem_alloc.h"
 
+#ifndef DEBUG
+constexpr bool bUseValidationLayers = true;
+#elif
+constexpr bool bUseValidationLayers = false;
+#endif
 
 namespace fe {
     VkRender::VkRender(SDL_Window* window)  {
@@ -25,7 +32,7 @@ namespace fe {
         init_pipelines();
 
         _isInitialized = true;
-        FE_CORE_LOG("Vulkan Renderer successfully initialized");
+        FE_CORE_INFO("Vulkan Renderer successfully initialized");
 
     }
     VkRender::~VkRender() {
@@ -60,7 +67,7 @@ namespace fe {
         // wait until the gpu has finished rendering the last frame. Timeout of 1 second
         VK_CHECK(vkWaitForFences(_device, 1, &get_current_frame()._renderFence, true, 1000000000));
         get_current_frame()._deletionQueue.flush();
-
+        uint32_t swapchainImageIndex;
         VK_CHECK(vkResetFences(_device, 1, &get_current_frame()._renderFence));
 
         VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
@@ -162,7 +169,7 @@ namespace fe {
         vkb::Instance vkb_inst = inst_ret.value();
         _instance = vkb_inst.instance;  
 	    _debug_messenger = vkb_inst.debug_messenger;
-        SDL_Vulkan_CreateSurface(_window, _instance, &_surface);
+        SDL_Vulkan_CreateSurface(_window, _instance, nullptr, &_surface);
 
         //vulkan 1.3 features
         VkPhysicalDeviceVulkan13Features features{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
@@ -231,7 +238,7 @@ namespace fe {
         drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
         drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
-        VkImageCreateInfo rimg_info = vkinit::image_create_info(_drawImage.imageFormat, drawImageUsages, drawImageExtent);
+        VkImageCreateInfo rimg_info = image_create_info(_drawImage.imageFormat, drawImageUsages, drawImageExtent);
 
         //for the draw image, we want to allocate it from gpu local memory
         VmaAllocationCreateInfo rimg_allocinfo = {};
@@ -242,12 +249,12 @@ namespace fe {
         vmaCreateImage(_allocator, &rimg_info, &rimg_allocinfo, &_drawImage.image, &_drawImage.allocation, nullptr);
 
         //build a image-view for the draw image to use for rendering
-        VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(_drawImage.imageFormat, _drawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+        VkImageViewCreateInfo rview_info = imageview_create_info(_drawImage.imageFormat, _drawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
         VK_CHECK(vkCreateImageView(_device, &rview_info, nullptr, &_drawImage.imageView));
 
         //add to deletion queues
-        _mainDeletionQueue.push_function([=]() {
+        _mainDeletionQueue.push_function([=, this]() {
             vkDestroyImageView(_device, _drawImage.imageView, nullptr);
             vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
         });
@@ -279,7 +286,7 @@ namespace fe {
     }
     void VkRender::init_sync_structures() {
         VkFenceCreateInfo fenceCreateInfo = fence_create_info(VK_FENCE_CREATE_SIGNALED_BIT);
-        VkSemaphoreCreateInfo semaphoreCreateInfo = vkinit::semaphore_create_info();
+        VkSemaphoreCreateInfo semaphoreCreateInfo = semaphore_create_info();
 
         for (int i = 0; i < FRAME_OVERLAP; i++) {
             VK_CHECK(vkCreateFence(_device, &fenceCreateInfo, nullptr, &_frames[i]._renderFence));
@@ -350,7 +357,7 @@ namespace fe {
         VK_CHECK(vkCreatePipelineLayout(_device, &computeLayout, nullptr, &_gradientPipelineLayout));
 
         VkShaderModule computeDrawShader;
-        if (!vkutil::load_shader_module("../shaders/gradient.comp.spv", _device, &computeDrawShader))
+        if (!load_shader_module("../shaders/gradient.comp.spv", _device, &computeDrawShader))
         {
             FE_CORE_ERROR("Error when building the compuse shader");
         }

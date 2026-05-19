@@ -1,10 +1,11 @@
 #pragma once
 
+#include "Descriptors.h"
 #include "Types.h"
 #include "Initializers.h"
 
 
-#include "VkBootstrap.h"
+
 
 struct SDL_Window;
 
@@ -43,9 +44,10 @@ namespace fe{
 
     constexpr unsigned int FRAME_OVERLAP = 2;
     class VkRender {
+    public:
         int _frameNumber {0};
         bool _isInitialized;
-
+        VkExtent2D _windowExtent { 1700, 900 };
 
         VkRender(SDL_Window* window);
         ~VkRender();
@@ -54,7 +56,8 @@ namespace fe{
     private:
         SDL_Window *_window;
         DeletionQueue _deletionQueue;
-        
+        DeletionQueue _mainDeletionQueue;
+
         VmaAllocator _allocator;
 
         VkInstance _instance;// Vulkan library handle
@@ -73,7 +76,7 @@ namespace fe{
 
         // Commands
         FrameData _frames[FRAME_OVERLAP];
-        FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]};
+        FrameData& get_current_frame() { return _frames[_frameNumber % FRAME_OVERLAP]; }
 
         VkQueue _graphicsQueue;
         uint32_t _graphicsQueueFamily;
@@ -90,6 +93,10 @@ namespace fe{
         VkPipeline _gradientPipeline;
         VkPipelineLayout _gradientPipelineLayout;
 
+        VkFence _immFence;
+        VkCommandBuffer _immCommandBuffer;
+        VkCommandPool _immCommandPool;
+
         void init_vulkan();
         void init_swapchain();
         void init_commands();
@@ -97,12 +104,12 @@ namespace fe{
         void init_descriptors();
         void init_pipelines();
         void init_background_pipelines();
-        
+
     	void create_swapchain(uint32_t width, uint32_t height);
 	    void destroy_swapchain();
 
         void draw_background(VkCommandBuffer cmd);
+        void immediate_submit(std::function<void(VkCommandBuffer cmd)>&& function);
 
-
-    }
+    };
 }

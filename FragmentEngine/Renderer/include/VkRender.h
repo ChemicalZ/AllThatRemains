@@ -137,6 +137,7 @@ namespace fe {
 
         void Draw();
         void UpdateScene();
+        void RequestResize();
 
         AllocatedBuffer create_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
         AllocatedImage create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);

@@ -37,7 +37,9 @@ namespace fe {
             throw std::runtime_error("SDL_Init failed: " + std::string(SDL_GetError()));
         }
 
-        m_window = SDL_CreateWindow(m_title, m_width, m_height, SDL_WINDOW_RESIZABLE);
+        constexpr SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+
+        m_window = SDL_CreateWindow(m_title, m_width, m_height, window_flags);
         if (!m_window) {
             throw std::runtime_error("SDL_CreateWindow failed: " + std::string(SDL_GetError()));
         }
@@ -75,6 +77,7 @@ namespace fe {
             }
             if (event.type == SDL_EVENT_WINDOW_RESIZED) {
                 FE_CORE_INFO("Window resized to {}x{}", event.window.data1, event.window.data2);
+                m_renderer->resize_requested = true;
             }
             if (event.type == SDL_EVENT_WINDOW_HIDDEN) {
                 FE_CORE_INFO("Window hidden");
@@ -99,6 +102,9 @@ namespace fe {
                 // throttle the speed to avoid the endless spinning
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
+            }
+            if (m_renderer->resize_requested) {
+                m_renderer->RequestResize();
             }
             m_renderer->Draw();
         }

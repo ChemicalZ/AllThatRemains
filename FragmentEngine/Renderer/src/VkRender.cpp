@@ -188,6 +188,10 @@ void VkRender::UpdateScene() {
     }
 }
 
+void VkRender::RequestResize() {
+    resize_swapchain();
+}
+
 // ─── Draw passes ──────────────────────────────────────────────────────────
 
 void VkRender::draw_background(VkCommandBuffer cmd) {

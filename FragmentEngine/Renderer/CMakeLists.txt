@@ -24,4 +24,6 @@ target_link_libraries(FragmentRenderer PUBLIC
         vk-bootstrap::vk-bootstrap
         FragmentLog
         imgui::imgui
+        fastgltf::fastgltf
+        SDL3_image::SDL3_image
 )

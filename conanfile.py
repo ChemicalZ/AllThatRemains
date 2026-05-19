@@ -20,10 +20,14 @@ class MyProjectConan(ConanFile):
         self.requires("vk-bootstrap/1.3.296", override="vulkan-headers/1.4.313.0")
         self.requires("imgui/1.92.7")
         self.requires("fastgltf/0.9.0")
+        self.requires("sdl_image/3.4.0")
 
 
     def configure(self):
         self.options["sdl"].shared = True
+        self.options["sdl_image"].shared = True
+        self.options["sdl_image"].with_libtiff = False
+        self.options["sdl_image"].with_avif = False
 
     def build_requirements(self):
             self.tool_requires("cmake/[>=3.25]")

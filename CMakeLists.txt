@@ -11,6 +11,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/build/lib/release
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_SOURCE_DIR}/build/lib/debug)
 add_compile_definitions(VULKAN_HPP_NO_TO_STRING)
 find_package(SDL3 REQUIRED)
+find_package(SDL3_image REQUIRED)
 find_package(VulkanMemoryAllocator REQUIRED)
 find_package(volk REQUIRED)
 find_package(Vulkan REQUIRED)

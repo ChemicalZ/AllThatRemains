@@ -600,11 +600,57 @@ void VkRender::draw_imgui_panels() {
         ImGui::Text("Frame #%d", _frameNumber);
 
         ImGui::SeparatorText("Loaded Scenes");
-        if (loadedScenes.empty()) {
-            ImGui::TextDisabled("(none)");
-        } else {
-            for (auto& [name, scene] : loadedScenes) {
-                ImGui::BulletText("%s", name.c_str());
+        {
+            std::string toRemove;
+            if (loadedScenes.empty()) {
+                ImGui::TextDisabled("(none)");
+            } else {
+                for (auto& [name, scene] : loadedScenes) {
+                    ImGui::Text("%s", name.c_str());
+                    ImGui::SameLine();
+                    ImGui::PushID(name.c_str());
+                    if (ImGui::SmallButton("-")) {
+                        toRemove = name;
+                    }
+                    ImGui::PopID();
+                }
+            }
+            if (!toRemove.empty()) {
+                loadedScenes.erase(toRemove);
+            }
+        }
+
+        ImGui::SeparatorText("Add Object");
+        {
+            static constexpr const char* kAssets[] = {
+                "basicmesh.glb",
+                "house.glb",
+                "house2.glb",
+                "monkey.glb",
+                "monkey2.glb",
+                "monkeyHD.glb",
+                "structure.glb",
+                "structure_mat.glb",
+            };
+            static int selectedAsset = 0;
+            static int spawnCounter  = 0;
+            static char statusMsg[64] = "";
+
+            ImGui::Combo("Asset", &selectedAsset, kAssets, IM_ARRAYSIZE(kAssets));
+            if (ImGui::Button("Add to Scene")) {
+                std::string key = std::string(kAssets[selectedAsset]) + "#" + std::to_string(++spawnCounter);
+                std::string path = std::string("../assets/") + kAssets[selectedAsset];
+                auto result = loadGltf(this, path);
+                if (result.has_value()) {
+                    loadedScenes[key] = *result;
+                    snprintf(statusMsg, sizeof(statusMsg), "Added %s", key.c_str());
+                } else {
+                    snprintf(statusMsg, sizeof(statusMsg), "Failed to load %s", kAssets[selectedAsset]);
+                    --spawnCounter;
+                }
+            }
+            if (statusMsg[0] != '\0') {
+                ImGui::TextDisabled("%s", statusMsg);
             }
         }
     }

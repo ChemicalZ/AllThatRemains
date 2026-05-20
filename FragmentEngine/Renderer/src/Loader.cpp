@@ -163,7 +163,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
         { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }
     };
-    file.descriptorPool.init(renderer->_device, gltf.materials.size(), sizes);
+    file.descriptorPool.init(renderer->_device, std::max<uint32_t>(1, gltf.materials.size()), sizes);
 
     // Samplers
     for (fastgltf::Sampler& sampler : gltf.samplers) {
@@ -196,9 +196,9 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
         }
     }
 
-    // Material data buffer
+    // Material data buffer — allocate at least 1 slot for the default material fallback
     file.materialDataBuffer = renderer->create_buffer(
-        sizeof(GLTFMetallic_Roughness::MaterialConstants) * gltf.materials.size(),
+        sizeof(GLTFMetallic_Roughness::MaterialConstants) * std::max<size_t>(1, gltf.materials.size()),
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VMA_MEMORY_USAGE_CPU_TO_GPU);
 
@@ -243,6 +243,24 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
 
         newMat->data = renderer->metalRoughMaterial.write_material(renderer->_device, passType, materialResources, file.descriptorPool);
         data_index++;
+    }
+
+    // Default material for primitives with no material index
+    if (materials.empty()) {
+        auto defaultMat = std::make_shared<GLTFMaterial>();
+        GLTFMetallic_Roughness::MaterialResources defaultResources;
+        defaultResources.colorImage        = renderer->_whiteImage;
+        defaultResources.colorSampler      = renderer->_defaultSamplerLinear;
+        defaultResources.metalRoughImage   = renderer->_whiteImage;
+        defaultResources.metalRoughSampler = renderer->_defaultSamplerLinear;
+        defaultResources.dataBuffer        = file.materialDataBuffer.buffer;
+        defaultResources.dataBufferOffset  = 0;
+        sceneMaterialConstants[0].colorFactors        = glm::vec4(1.f);
+        sceneMaterialConstants[0].metal_rough_factors = glm::vec4(1.f, 0.5f, 0.f, 0.f);
+        sceneMaterialConstants[0].colorTexID      = renderer->texCache.AddTexture(renderer->_whiteImage.imageView, renderer->_defaultSamplerLinear).Index;
+        sceneMaterialConstants[0].metalRoughTexID = renderer->texCache.AddTexture(renderer->_whiteImage.imageView, renderer->_defaultSamplerLinear).Index;
+        defaultMat->data = renderer->metalRoughMaterial.write_material(renderer->_device, MaterialPass::MainColor, defaultResources, file.descriptorPool);
+        materials.push_back(defaultMat);
     }
 
     // Meshes

@@ -9,7 +9,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/build/lib/release
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_SOURCE_DIR}/build/lib/debug)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/build/lib/release)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_SOURCE_DIR}/build/lib/debug)
-add_compile_definitions(VULKAN_HPP_NO_TO_STRING)
+add_compile_definitions(VULKAN_HPP_NO_TO_STRING GLM_FORCE_DEPTH_ZERO_TO_ONE)
 find_package(SDL3 REQUIRED)
 find_package(SDL3_image REQUIRED)
 find_package(VulkanMemoryAllocator REQUIRED)

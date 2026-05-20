@@ -24,6 +24,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <ranges>
 
 
 constexpr bool bUseValidationLayers = true;
@@ -174,7 +175,7 @@ void VkRender::UpdateScene() {
 
     glm::mat4 view = mainCamera.getViewMatrix();
     glm::mat4 projection = glm::perspective(glm::radians(70.f),
-        (float)_windowExtent.width / (float)_windowExtent.height,
+        static_cast<float>(_windowExtent.width) / static_cast<float>(_windowExtent.height),
         10000.f, 0.1f);
     projection[1][1] *= -1;
 
@@ -186,7 +187,7 @@ void VkRender::UpdateScene() {
     sceneData.sunlightDirection = glm::vec4(0.f, 1.f, 0.5f, 1.0f);
     sceneData.sunlightColor    = glm::vec4(1.0f);
 
-    for (auto& [name, scene] : loadedScenes) {
+    for (auto &scene: loadedScenes | std::views::values) {
         scene->Draw(glm::mat4{1.f}, drawCommands);
     }
 }
@@ -236,11 +237,11 @@ void VkRender::draw_geometry(VkCommandBuffer cmd) {
         destroy_buffer(gpuSceneDataBuffer);
     });
 
-    GPUSceneData* sceneUniformData = (GPUSceneData*)gpuSceneDataBuffer.info.pMappedData;
+    auto* sceneUniformData = static_cast<GPUSceneData *>(gpuSceneDataBuffer.info.pMappedData);
     *sceneUniformData = sceneData;
 
     VkDescriptorSetVariableDescriptorCountAllocateInfo allocArrayInfo {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO};
-    uint32_t descriptorCounts = (uint32_t)texCache.Cache.size();
+    auto descriptorCounts = static_cast<uint32_t>(texCache.Cache.size());
     allocArrayInfo.pDescriptorCounts = &descriptorCounts;
     allocArrayInfo.descriptorSetCount = 1;
 
@@ -249,7 +250,7 @@ void VkRender::draw_geometry(VkCommandBuffer cmd) {
     DescriptorWriter writer;
     writer.write_buffer(0, gpuSceneDataBuffer.buffer, sizeof(GPUSceneData), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
-    if (texCache.Cache.size() > 0) {
+    if (!texCache.Cache.empty()) {
         VkWriteDescriptorSet arraySet {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         arraySet.descriptorCount  = (uint32_t)texCache.Cache.size();
         arraySet.dstArrayElement  = 0;
@@ -291,7 +292,7 @@ void VkRender::draw_geometry(VkCommandBuffer cmd) {
             vkCmdBindIndexBuffer(cmd, r.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
         }
 
-        GPUDrawPushConstants push_constants;
+        GPUDrawPushConstants push_constants{};
         push_constants.worldMatrix   = r.transform;
         push_constants.vertexBuffer  = r.vertexBufferAddress;
         vkCmdPushConstants(cmd, r.material->pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &push_constants);
@@ -347,13 +348,13 @@ AllocatedBuffer VkRender::create_buffer(size_t allocSize, VkBufferUsageFlags usa
     vmaallocInfo.usage = memoryUsage;
     vmaallocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-    AllocatedBuffer newBuffer;
+    AllocatedBuffer newBuffer{};
     VK_CHECK(vmaCreateBuffer(_allocator, &bufferInfo, &vmaallocInfo, &newBuffer.buffer, &newBuffer.allocation, &newBuffer.info));
     return newBuffer;
 }
 
 AllocatedImage VkRender::create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped) {
-    AllocatedImage newImage;
+    AllocatedImage newImage{};
     newImage.imageFormat = format;
     newImage.imageExtent = size;
 
@@ -364,7 +365,7 @@ AllocatedImage VkRender::create_image(VkExtent3D size, VkFormat format, VkImageU
 
     VmaAllocationCreateInfo allocinfo = {};
     allocinfo.usage         = VMA_MEMORY_USAGE_GPU_ONLY;
-    allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    allocinfo.requiredFlags = static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VK_CHECK(vmaCreateImage(_allocator, &img_info, &allocinfo, &newImage.image, &newImage.allocation, nullptr));
 
     VkImageAspectFlags aspectFlag = (format == VK_FORMAT_D32_SFLOAT) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
@@ -376,7 +377,7 @@ AllocatedImage VkRender::create_image(VkExtent3D size, VkFormat format, VkImageU
 }
 
 AllocatedImage VkRender::create_image(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped) {
-    size_t data_size = (size_t)size.depth * size.width * size.height * 4;
+    size_t data_size = static_cast<size_t>(size.depth) * size.width * size.height * 4;
     AllocatedBuffer uploadbuffer = create_buffer(data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
     memcpy(uploadbuffer.info.pMappedData, data, data_size);
 
@@ -407,13 +408,13 @@ GPUMeshBuffers VkRender::uploadMesh(std::span<uint32_t> indices, std::span<Verte
     const size_t vertexBufferSize = vertices.size() * sizeof(Vertex);
     const size_t indexBufferSize  = indices.size() * sizeof(uint32_t);
 
-    GPUMeshBuffers newSurface;
+    GPUMeshBuffers newSurface{};
     newSurface.vertexBuffer = create_buffer(vertexBufferSize,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VMA_MEMORY_USAGE_GPU_ONLY);
 
-    VkBufferDeviceAddressInfo deviceAdressInfo {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = newSurface.vertexBuffer.buffer};
-    newSurface.vertexBufferAddress = vkGetBufferDeviceAddress(_device, &deviceAdressInfo);
+    VkBufferDeviceAddressInfo deviceAddressInfo {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = newSurface.vertexBuffer.buffer};
+    newSurface.vertexBufferAddress = vkGetBufferDeviceAddress(_device, &deviceAddressInfo);
 
     newSurface.indexBuffer = create_buffer(indexBufferSize,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -585,15 +586,15 @@ void VkRender::init_sync_structures() {
     VK_CHECK(vkCreateFence(_device, &fenceCreateInfo, nullptr, &_immFence));
     _mainDeletionQueue.push_function([this]() { vkDestroyFence(_device, _immFence, nullptr); });
 
-    for (int i = 0; i < FRAME_OVERLAP; i++) {
-        VK_CHECK(vkCreateFence(_device, &fenceCreateInfo, nullptr, &_frames[i]._renderFence));
-        VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frames[i]._swapchainSemaphore));
-        VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frames[i]._renderSemaphore));
+    for (auto & _frame : _frames) {
+        VK_CHECK(vkCreateFence(_device, &fenceCreateInfo, nullptr, &_frame._renderFence));
+        VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frame._swapchainSemaphore));
+        VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frame._renderSemaphore));
 
-        _mainDeletionQueue.push_function([this, i]() {
-            vkDestroyFence(_device, _frames[i]._renderFence, nullptr);
-            vkDestroySemaphore(_device, _frames[i]._swapchainSemaphore, nullptr);
-            vkDestroySemaphore(_device, _frames[i]._renderSemaphore, nullptr);
+        _mainDeletionQueue.push_function([this, &_frame]() {
+            vkDestroyFence(_device, _frame._renderFence, nullptr);
+            vkDestroySemaphore(_device, _frame._swapchainSemaphore, nullptr);
+            vkDestroySemaphore(_device, _frame._renderSemaphore, nullptr);
         });
     }
 }
@@ -641,16 +642,16 @@ void VkRender::init_descriptors() {
         writer.update_set(_device, _drawImageDescriptors);
     }
 
-    for (int i = 0; i < FRAME_OVERLAP; i++) {
+    for (auto & _frame : _frames) {
         std::vector<DescriptorAllocatorGrowable::PoolSizeRatio> frame_sizes = {
             { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 },
         };
-        _frames[i]._frameDescriptors.init(_device, 1000, frame_sizes);
-        _mainDeletionQueue.push_function([this, i]() {
-            _frames[i]._frameDescriptors.destroy_pools(_device);
+        _frame._frameDescriptors.init(_device, 1000, frame_sizes);
+        _mainDeletionQueue.push_function([this, &_frame]() {
+            _frame._frameDescriptors.destroy_pools(_device);
         });
     }
 }
@@ -698,7 +699,7 @@ void VkRender::init_background_pipelines() {
         pipelineInfo.layout = _gradientPipelineLayout;
         pipelineInfo.stage  = stageinfo;
 
-        ComputeEffect effect;
+        ComputeEffect effect{};
         effect.name   = name;
         effect.layout = _gradientPipelineLayout;
         effect.data   = defaultData;
@@ -725,7 +726,7 @@ void VkRender::init_background_pipelines() {
 }
 
 void VkRender::init_default_data() {
-    std::array<Vertex, 4> rect_vertices;
+    std::array<Vertex, 4> rect_vertices{};
     rect_vertices[0].position = { 0.5f, -0.5f, 0.f };
     rect_vertices[1].position = { 0.5f,  0.5f, 0.f };
     rect_vertices[2].position = {-0.5f, -0.5f, 0.f };
@@ -751,7 +752,7 @@ void VkRender::init_default_data() {
     _greyImage  = create_image((void*)&grey,  VkExtent3D{1,1,1}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
     _blackImage = create_image((void*)&black, VkExtent3D{1,1,1}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
 
-    std::array<uint32_t, 16 * 16> pixels;
+    std::array<uint32_t, 16 * 16> pixels{};
     for (int x = 0; x < 16; x++) {
         for (int y = 0; y < 16; y++) {
             pixels[y * 16 + x] = ((x % 2) ^ (y % 2)) ? magenta : black;
@@ -904,7 +905,7 @@ void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx) {
     glm::mat4 nodeMatrix = topMatrix * worldTransform;
 
     for (auto& s : mesh->surfaces) {
-        RenderObject def;~
+        RenderObject def = {};
         def.indexCount          = s.count;
         def.firstIndex          = s.startIndex;
         def.indexBuffer         = mesh->meshBuffers.indexBuffer.buffer;
@@ -926,12 +927,12 @@ void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx) {
 // ─── TextureCache ──────────────────────────────────────────────────────────
 
 TextureID TextureCache::AddTexture(const VkImageView& image, VkSampler sampler) {
-    for (uint32_t i = 0; i < (uint32_t)Cache.size(); i++) {
+    for (uint32_t i = 0; i < static_cast<uint32_t>(Cache.size()); i++) {
         if (Cache[i].imageView == image && Cache[i].sampler == sampler) {
             return TextureID{i};
         }
     }
-    uint32_t idx = (uint32_t)Cache.size();
+    const auto idx = static_cast<uint32_t>(Cache.size());
     Cache.push_back(VkDescriptorImageInfo{
         .sampler     = sampler,
         .imageView   = image,

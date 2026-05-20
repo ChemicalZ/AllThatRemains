@@ -27,13 +27,14 @@
 #include <glm/vec4.hpp>
 
 
-#define VK_CHECK(x)                                                     \
-do {                                                                \
-    VkResult err = x;                                               \
-    if (err) {                                                      \
-        fmt::println("Detected Vulkan error: {}", vk::to_string(static_cast<vk::Result>(err))); \
-        abort();                                                    \
-    }                                                               \
+namespace fe {
+    [[noreturn]] void vk_check_fail(VkResult err, const char* expr);
+} // namespace fe
+
+#define VK_CHECK(x)                                        \
+do {                                                   \
+    VkResult _vk_err = (x);                            \
+    if (_vk_err) { fe::vk_check_fail(_vk_err, #x); }  \
 } while (0)
 
 namespace fe {

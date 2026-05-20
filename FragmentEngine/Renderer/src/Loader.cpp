@@ -276,6 +276,16 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
         vertices.clear();
 
         for (auto&& p : mesh.primitives) {
+            if (!p.indicesAccessor.has_value()) {
+                FE_CORE_WARN("Mesh '{}' primitive missing index accessor, skipping", mesh.name);
+                continue;
+            }
+            auto* posAttr = p.findAttribute("POSITION");
+            if (posAttr == p.attributes.end()) {
+                FE_CORE_WARN("Mesh '{}' primitive missing POSITION attribute, skipping", mesh.name);
+                continue;
+            }
+
             GeoSurface newSurface;
             newSurface.startIndex = (uint32_t)indices.size();
             newSurface.count      = (uint32_t)gltf.accessors[p.indicesAccessor.value()].count;
@@ -291,7 +301,7 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
 
             // Positions
             {
-                fastgltf::Accessor& posAccessor = gltf.accessors[p.findAttribute("POSITION")->accessorIndex];
+                fastgltf::Accessor& posAccessor = gltf.accessors[posAttr->accessorIndex];
                 vertices.resize(vertices.size() + posAccessor.count);
                 fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, posAccessor,
                     [&](glm::vec3 v, size_t index) {
@@ -402,6 +412,23 @@ void LoadedGLTF::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
 void LoadedGLTF::clearAll()
 {
     VkDevice dv = creator->_device;
+
+    // Evict owned textures from global cache first (so next frame descriptor
+    // update uses only valid fallback entries).
+    VkDescriptorImageInfo fallback {
+        .sampler     = creator->_defaultSamplerNearest,
+        .imageView   = creator->_errorCheckerboardImage.imageView,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    };
+    for (auto& [k, v] : images) {
+        if (v.image == creator->_errorCheckerboardImage.image) continue;
+        creator->texCache.FreeTexturesWithView(v.imageView, fallback);
+    }
+
+    // Guarantee no in-flight GPU frame still references these resources.
+    // clearAll() runs during the CPU portion of a frame while the previous
+    // frame's GPU submission may still be in flight.
+    vkDeviceWaitIdle(dv);
 
     for (auto& [k, v] : meshes) {
         creator->destroy_buffer(v->meshBuffers.indexBuffer);

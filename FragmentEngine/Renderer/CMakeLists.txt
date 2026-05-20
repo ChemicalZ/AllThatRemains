@@ -15,6 +15,7 @@ target_include_directories(FragmentRenderer PUBLIC
 target_compile_definitions(FragmentRenderer PUBLIC
         SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
         IMGUI_IMPL_VULKAN_USE_VOLK
+        GLM_FORCE_DEPTH_ZERO_TO_ONE
 )
 
 target_link_libraries(FragmentRenderer PUBLIC

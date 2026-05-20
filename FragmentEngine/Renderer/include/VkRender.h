@@ -32,10 +32,10 @@ namespace fe {
     struct FrameData {
         VkCommandPool _commandPool;
         VkCommandBuffer _mainCommandBuffer;
-        VkSemaphore _swapchainSemaphore, _renderSemaphore;
         VkFence _renderFence;
         DeletionQueue _deletionQueue;
         DescriptorAllocatorGrowable _frameDescriptors;
+        AllocatedBuffer _sceneDataBuffer;
     };
 
     struct ComputePushConstants {
@@ -80,8 +80,10 @@ namespace fe {
 
     struct TextureCache {
         std::vector<VkDescriptorImageInfo> Cache;
+        std::vector<uint32_t> _freeSlots;
         std::unordered_map<std::string, TextureID> NameMap;
         TextureID AddTexture(const VkImageView& image, VkSampler sampler);
+        void FreeTexturesWithView(VkImageView view, VkDescriptorImageInfo fallback);
     };
 
     struct GLTFMetallic_Roughness {
@@ -193,6 +195,14 @@ namespace fe {
         std::vector<VkImage> _swapchainImages;
         std::vector<VkImageView> _swapchainImageViews;
         VkExtent2D _swapchainExtent;
+
+        // Per-image semaphores — one per swapchain image for each role.
+        // Acquire: swap-on-acquire pattern so the semaphore is only reused
+        // after the same image is re-acquired (releasing the swapchain's hold).
+        // Render: signaled by submit, waited by present — same lifetime rule.
+        std::vector<VkSemaphore> _imageAcquireSemaphores;
+        VkSemaphore _pendingAcquireSemaphore { VK_NULL_HANDLE };
+        std::vector<VkSemaphore> _imageRenderSemaphores;
 
         // Commands
         FrameData _frames[FRAME_OVERLAP];

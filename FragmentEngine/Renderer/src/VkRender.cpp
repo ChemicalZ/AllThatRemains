@@ -36,6 +36,12 @@ constexpr bool bUseValidationLayers = true;
 
 namespace fe {
 
+void vk_check_fail(VkResult err, const char* expr) {
+    FE_CORE_CRITICAL("Vulkan error in '{}': {}", expr,
+        vk::to_string(static_cast<vk::Result>(err)));
+}
+
+
 // ─── Frustum culling helper ────────────────────────────────────────────────
 
 static bool is_visible(const RenderObject& obj, const glm::mat4& viewproj)
@@ -103,6 +109,11 @@ VkRender::~VkRender() {
             _frame._deletionQueue.flush();
         }
 
+        // Destroy all loaded scenes before the VMA allocator is torn down.
+        // ~LoadedGLTF() calls clearAll() which frees GPU buffers/images via VMA.
+        // _mainDeletionQueue.flush() destroys the allocator, so this must come first.
+        loadedScenes.clear();
+
         _mainDeletionQueue.flush();
 
         destroy_swapchain();
@@ -124,12 +135,18 @@ void VkRender::Draw() {
     get_current_frame()._deletionQueue.flush();
     get_current_frame()._frameDescriptors.clear_pools(_device);
 
+    // Signal the pending acquire semaphore; after getting the image index,
+    // swap it into the per-image slot so the swapchain's hold on the old
+    // semaphore is released (we just re-acquired that image).
     uint32_t swapchainImageIndex;
-    VkResult e = vkAcquireNextImageKHR(_device, _swapchain, 1000000000, get_current_frame()._swapchainSemaphore, nullptr, &swapchainImageIndex);
-    if (e == VK_ERROR_OUT_OF_DATE_KHR) {
+    VkSemaphore acquireSem = _pendingAcquireSemaphore;
+    VkResult e = vkAcquireNextImageKHR(_device, _swapchain, 1000000000, acquireSem, nullptr, &swapchainImageIndex);
+    if (e == VK_ERROR_OUT_OF_DATE_KHR || e == VK_SUBOPTIMAL_KHR) {
         resize_requested = true;
-        return;
+        if (e == VK_ERROR_OUT_OF_DATE_KHR) return;
     }
+    _pendingAcquireSemaphore = _imageAcquireSemaphores[swapchainImageIndex];
+    _imageAcquireSemaphores[swapchainImageIndex] = acquireSem;
 
     _drawExtent.height = std::min(_swapchainExtent.height, _drawImage.imageExtent.height);
     _drawExtent.width  = std::min(_swapchainExtent.width,  _drawImage.imageExtent.width);
@@ -164,21 +181,23 @@ void VkRender::Draw() {
 
     VK_CHECK(vkEndCommandBuffer(cmd));
 
+    VkSemaphore renderSem = _imageRenderSemaphores[swapchainImageIndex];
+
     VkCommandBufferSubmitInfo cmdinfo = command_buffer_submit_info(cmd);
-    VkSemaphoreSubmitInfo waitInfo   = semaphore_submit_info(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, get_current_frame()._swapchainSemaphore);
-    VkSemaphoreSubmitInfo signalInfo = semaphore_submit_info(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, get_current_frame()._renderSemaphore);
+    VkSemaphoreSubmitInfo waitInfo   = semaphore_submit_info(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR, _imageAcquireSemaphores[swapchainImageIndex]);
+    VkSemaphoreSubmitInfo signalInfo = semaphore_submit_info(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, renderSem);
     VkSubmitInfo2 submit = submit_info(&cmdinfo, &signalInfo, &waitInfo);
     VK_CHECK(vkQueueSubmit2(_graphicsQueue, 1, &submit, get_current_frame()._renderFence));
 
     VkPresentInfoKHR presentInfo = present_info();
     presentInfo.pSwapchains        = &_swapchain;
     presentInfo.swapchainCount     = 1;
-    presentInfo.pWaitSemaphores    = &get_current_frame()._renderSemaphore;
+    presentInfo.pWaitSemaphores    = &renderSem;
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pImageIndices      = &swapchainImageIndex;
 
     VkResult presentResult = vkQueuePresentKHR(_graphicsQueue, &presentInfo);
-    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) {
+    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR) {
         resize_requested = true;
     }
 
@@ -250,12 +269,9 @@ void VkRender::draw_geometry(VkCommandBuffer cmd) {
         }
     }
 
-    AllocatedBuffer gpuSceneDataBuffer = create_buffer(sizeof(GPUSceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
-    get_current_frame()._deletionQueue.push_function([=, this]() {
-        destroy_buffer(gpuSceneDataBuffer);
-    });
+    AllocatedBuffer& gpuSceneDataBuffer = get_current_frame()._sceneDataBuffer;
 
-    auto* sceneUniformData = static_cast<GPUSceneData *>(gpuSceneDataBuffer.info.pMappedData);
+    auto* sceneUniformData = static_cast<GPUSceneData*>(gpuSceneDataBuffer.info.pMappedData);
     *sceneUniformData = sceneData;
 
     VkDescriptorSetVariableDescriptorCountAllocateInfo allocArrayInfo {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO};
@@ -617,6 +633,11 @@ void VkRender::draw_imgui_panels() {
             }
             if (!toRemove.empty()) {
                 loadedScenes.erase(toRemove);
+                // drawCommands was built by UpdateScene() before this deletion.
+                // Flush it so draw_geometry() doesn't touch destroyed VkBuffers
+                // or dangling MaterialInstance* from the just-freed LoadedGLTF.
+                drawCommands.OpaqueSurfaces.clear();
+                drawCommands.TransparentSurfaces.clear();
             }
         }
 
@@ -798,13 +819,9 @@ void VkRender::init_sync_structures() {
 
     for (auto & _frame : _frames) {
         VK_CHECK(vkCreateFence(_device, &fenceCreateInfo, nullptr, &_frame._renderFence));
-        VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frame._swapchainSemaphore));
-        VK_CHECK(vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &_frame._renderSemaphore));
 
         _mainDeletionQueue.push_function([this, &_frame]() {
             vkDestroyFence(_device, _frame._renderFence, nullptr);
-            vkDestroySemaphore(_device, _frame._swapchainSemaphore, nullptr);
-            vkDestroySemaphore(_device, _frame._renderSemaphore, nullptr);
         });
     }
 }
@@ -862,6 +879,12 @@ void VkRender::init_descriptors() {
         _frame._frameDescriptors.init(_device, 1000, frame_sizes);
         _mainDeletionQueue.push_function([this, &_frame]() {
             _frame._frameDescriptors.destroy_pools(_device);
+        });
+
+        _frame._sceneDataBuffer = create_buffer(sizeof(GPUSceneData),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+        _mainDeletionQueue.push_function([this, &_frame]() {
+            destroy_buffer(_frame._sceneDataBuffer);
         });
     }
 }
@@ -1015,9 +1038,38 @@ void VkRender::create_swapchain(uint32_t width, uint32_t height) {
     _swapchain           = vkbSwapchain.swapchain;
     _swapchainImages     = vkbSwapchain.get_images().value();
     _swapchainImageViews = vkbSwapchain.get_image_views().value();
+
+    // One acquire semaphore per swapchain image + one extra "pending" semaphore.
+    // On each acquire we signal _pendingAcquireSemaphore, then swap it into the
+    // per-image slot for the acquired index. This guarantees the semaphore we
+    // reuse was released by a re-acquire of that same image, satisfying the
+    // swapchain semaphore reuse rules.
+    VkSemaphoreCreateInfo semInfo = semaphore_create_info();
+    _imageAcquireSemaphores.resize(_swapchainImages.size());
+    _imageRenderSemaphores.resize(_swapchainImages.size());
+    for (size_t i = 0; i < _swapchainImages.size(); ++i) {
+        VK_CHECK(vkCreateSemaphore(_device, &semInfo, nullptr, &_imageAcquireSemaphores[i]));
+        VK_CHECK(vkCreateSemaphore(_device, &semInfo, nullptr, &_imageRenderSemaphores[i]));
+    }
+    VK_CHECK(vkCreateSemaphore(_device, &semInfo, nullptr, &_pendingAcquireSemaphore));
 }
 
 void VkRender::destroy_swapchain() {
+    for (auto& sem : _imageAcquireSemaphores) {
+        vkDestroySemaphore(_device, sem, nullptr);
+    }
+    _imageAcquireSemaphores.clear();
+
+    for (auto& sem : _imageRenderSemaphores) {
+        vkDestroySemaphore(_device, sem, nullptr);
+    }
+    _imageRenderSemaphores.clear();
+
+    if (_pendingAcquireSemaphore != VK_NULL_HANDLE) {
+        vkDestroySemaphore(_device, _pendingAcquireSemaphore, nullptr);
+        _pendingAcquireSemaphore = VK_NULL_HANDLE;
+    }
+
     vkDestroySwapchainKHR(_device, _swapchain, nullptr);
     for (auto& view : _swapchainImageViews) {
         vkDestroyImageView(_device, view, nullptr);
@@ -1034,7 +1086,43 @@ void VkRender::resize_swapchain() {
     _windowExtent.height = h;
 
     create_swapchain(_windowExtent.width, _windowExtent.height);
+
+    // Rebuild draw/depth images at new extent
+    vkDestroyImageView(_device, _drawImage.imageView, nullptr);
+    vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
+    vkDestroyImageView(_device, _depthImage.imageView, nullptr);
+    vmaDestroyImage(_allocator, _depthImage.image, _depthImage.allocation);
+
+    VkExtent3D newExtent { _windowExtent.width, _windowExtent.height, 1 };
+
+    VmaAllocationCreateInfo gpuOnly {};
+    gpuOnly.usage         = VMA_MEMORY_USAGE_GPU_ONLY;
+    gpuOnly.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    _drawImage.imageExtent = newExtent;
+    {
+        VkImageUsageFlags drawUsages = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        VkImageCreateInfo rimg_info = image_create_info(_drawImage.imageFormat, drawUsages, newExtent);
+        VK_CHECK(vmaCreateImage(_allocator, &rimg_info, &gpuOnly, &_drawImage.image, &_drawImage.allocation, nullptr));
+        VkImageViewCreateInfo rview_info = imageview_create_info(_drawImage.imageFormat, _drawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+        VK_CHECK(vkCreateImageView(_device, &rview_info, nullptr, &_drawImage.imageView));
+    }
+
+    _depthImage.imageExtent = newExtent;
+    {
+        VkImageCreateInfo dimg_info = image_create_info(_depthImage.imageFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, newExtent);
+        VK_CHECK(vmaCreateImage(_allocator, &dimg_info, &gpuOnly, &_depthImage.image, &_depthImage.allocation, nullptr));
+        VkImageViewCreateInfo dview_info = imageview_create_info(_depthImage.imageFormat, _depthImage.image, VK_IMAGE_ASPECT_DEPTH_BIT);
+        VK_CHECK(vkCreateImageView(_device, &dview_info, nullptr, &_depthImage.imageView));
+    }
+
+    // Update compute descriptor pointing at the draw image storage view
+    DescriptorWriter writer;
+    writer.write_image(0, _drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    writer.update_set(_device, _drawImageDescriptors);
+
     resize_requested = false;
+    FE_CORE_INFO("Swapchain resized to {}x{}", _windowExtent.width, _windowExtent.height);
 }
 
 // ─── GLTFMetallic_Roughness ────────────────────────────────────────────────
@@ -1142,13 +1230,32 @@ TextureID TextureCache::AddTexture(const VkImageView& image, VkSampler sampler) 
             return TextureID{i};
         }
     }
-    const auto idx = static_cast<uint32_t>(Cache.size());
-    Cache.push_back(VkDescriptorImageInfo{
+
+    const VkDescriptorImageInfo entry {
         .sampler     = sampler,
         .imageView   = image,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-    });
+    };
+
+    if (!_freeSlots.empty()) {
+        const uint32_t idx = _freeSlots.back();
+        _freeSlots.pop_back();
+        Cache[idx] = entry;
+        return TextureID{idx};
+    }
+
+    const auto idx = static_cast<uint32_t>(Cache.size());
+    Cache.push_back(entry);
     return TextureID{idx};
+}
+
+void TextureCache::FreeTexturesWithView(VkImageView view, VkDescriptorImageInfo fallback) {
+    for (uint32_t i = 0; i < static_cast<uint32_t>(Cache.size()); i++) {
+        if (Cache[i].imageView == view) {
+            Cache[i] = fallback;
+            _freeSlots.push_back(i);
+        }
+    }
 }
 
 } // namespace fe

@@ -3,15 +3,67 @@
 
 namespace fe {
 
+    static VkPipelineStageFlags2 stage_for_layout(VkImageLayout layout)
+    {
+        switch (layout) {
+        case VK_IMAGE_LAYOUT_UNDEFINED:
+            return VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        case VK_IMAGE_LAYOUT_GENERAL:
+            return VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+            return VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            return VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        default:
+            return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        }
+    }
+
+    static VkAccessFlags2 access_for_layout(VkImageLayout layout, bool isSrc)
+    {
+        switch (layout) {
+        case VK_IMAGE_LAYOUT_UNDEFINED:
+        case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+            return 0;
+        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+            return VK_ACCESS_2_TRANSFER_READ_BIT;
+        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+            return VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+            return VK_ACCESS_2_SHADER_READ_BIT;
+        case VK_IMAGE_LAYOUT_GENERAL:
+            return isSrc
+                ? VK_ACCESS_2_SHADER_WRITE_BIT
+                : (VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+        case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+            return isSrc
+                ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                : (VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+            return isSrc
+                ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                : (VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        default:
+            return VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        }
+    }
+
     void transition_image(VkCommandBuffer cmd, VkImage image, VkImageLayout currentLayout, VkImageLayout newLayout)
     {
         VkImageMemoryBarrier2 imageBarrier {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         imageBarrier.pNext = nullptr;
 
-        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        imageBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        imageBarrier.dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+        imageBarrier.srcStageMask  = stage_for_layout(currentLayout);
+        imageBarrier.srcAccessMask = access_for_layout(currentLayout, true);
+        imageBarrier.dstStageMask  = stage_for_layout(newLayout);
+        imageBarrier.dstAccessMask = access_for_layout(newLayout, false);
 
         imageBarrier.oldLayout = currentLayout;
         imageBarrier.newLayout = newLayout;

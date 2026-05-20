@@ -28,7 +28,8 @@ class MyProjectConan(ConanFile):
         self.options["sdl_image"].shared = True
         self.options["sdl_image"].with_libtiff = False
         self.options["sdl_image"].with_avif = False
-
+        self.options["imgui"].with_sdl3_binding = True
+        self.options["imgui"].with_vulkan_binding = True
     def build_requirements(self):
             self.tool_requires("cmake/[>=3.25]")
 

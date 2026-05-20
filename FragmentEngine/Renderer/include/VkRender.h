@@ -2,7 +2,6 @@
 
 #include "Descriptors.h"
 #include "Types.h"
-#include "Initializers.h"
 #include "Camera.h"
 #include "Loader.h"
 
@@ -10,6 +9,7 @@
 #include <chrono>
 
 struct SDL_Window;
+union SDL_Event;
 
 namespace fe {
 
@@ -22,7 +22,7 @@ namespace fe {
         }
 
         void flush() {
-            for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+            for (auto it = deletors.rbegin(); it != deletors.rend(); ++it) {
                 (*it)();
             }
             deletors.clear();
@@ -68,8 +68,8 @@ namespace fe {
     };
 
     struct EngineStats {
-        float frametime;
-        int triangle_count;
+        long long frameTime;
+        uint32_t triangle_count;
         int drawcall_count;
         float mesh_draw_time;
     };
@@ -118,7 +118,8 @@ namespace fe {
 
     struct MeshNode : public Node {
         std::shared_ptr<MeshAsset> mesh;
-        virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx) override;
+
+        void Draw(const glm::mat4& topMatrix, DrawContext& ctx) override;
     };
 
     constexpr unsigned int FRAME_OVERLAP = 2;
@@ -138,6 +139,7 @@ namespace fe {
         void Draw();
         void UpdateScene();
         void RequestResize();
+        void process_event(SDL_Event& event);
 
         AllocatedBuffer create_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
         AllocatedImage create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
@@ -214,7 +216,7 @@ namespace fe {
 
         VkPipelineLayout _gradientPipelineLayout;
 
-        // Immediate submit
+        // Immediately submit
         VkFence _immFence;
         VkCommandBuffer _immCommandBuffer;
         VkCommandPool _immCommandPool;
@@ -240,5 +242,11 @@ namespace fe {
         void draw_background(VkCommandBuffer cmd);
         void draw_main(VkCommandBuffer cmd);
         void draw_geometry(VkCommandBuffer cmd);
+
+        // ImGui
+        VkDescriptorPool _imguiPool;
+        void init_imgui();
+        void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
+        void draw_imgui_panels();
     };
 }

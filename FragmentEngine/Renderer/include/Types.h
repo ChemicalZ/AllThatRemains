@@ -100,6 +100,10 @@ struct GPUDrawPushConstants {
 struct DrawContext;
 
 class IRenderable {
+public:
+    virtual ~IRenderable() = default;
+
+private:
     virtual void Draw(const glm::mat4& topMatrix, DrawContext& ctx) = 0;
 };
 

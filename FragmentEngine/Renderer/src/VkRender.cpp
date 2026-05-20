@@ -8,6 +8,11 @@
 #include "Pipelines.h"
 #include "Initializers.h"
 
+#include "imgui.h"
+#include "imgui_impl_sdl3.h"
+#include "imgui_impl_vulkan.h"
+
+
 // VMA is used with Volk/VK_NO_PROTOTYPES. In newer VMA versions, dynamic
 // Vulkan functions require vkGetInstanceProcAddr and vkGetDeviceProcAddr to be
 // passed through VmaAllocatorCreateInfo::pVulkanFunctions.
@@ -78,6 +83,7 @@ VkRender::VkRender(SDL_Window* window) {
     init_pipelines();
     init_default_data();
     init_renderables();
+    init_imgui();
 
     _isInitialized = true;
 
@@ -93,8 +99,8 @@ VkRender::~VkRender() {
     if (_isInitialized) {
         vkDeviceWaitIdle(_device);
 
-        for (int i = 0; i < FRAME_OVERLAP; i++) {
-            _frames[i]._deletionQueue.flush();
+        for (auto & _frame : _frames) {
+            _frame._deletionQueue.flush();
         }
 
         _mainDeletionQueue.flush();
@@ -111,6 +117,8 @@ VkRender::~VkRender() {
 // ─── Draw ─────────────────────────────────────────────────────────────────
 
 void VkRender::Draw() {
+    auto drawStart = std::chrono::system_clock::now();
+
     VK_CHECK(vkWaitForFences(_device, 1, &get_current_frame()._renderFence, true, 1000000000));
 
     get_current_frame()._deletionQueue.flush();
@@ -128,6 +136,12 @@ void VkRender::Draw() {
 
     VK_CHECK(vkResetFences(_device, 1, &get_current_frame()._renderFence));
 
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    draw_imgui_panels();
+    ImGui::Render();
+
     VkCommandBuffer cmd = get_current_frame()._mainCommandBuffer;
     VK_CHECK(vkResetCommandBuffer(cmd, 0));
 
@@ -144,7 +158,9 @@ void VkRender::Draw() {
 
     copy_image_to_image(cmd, _drawImage.image, _swapchainImages[swapchainImageIndex], _drawExtent, _swapchainExtent);
 
-    transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    draw_imgui(cmd, _swapchainImageViews[swapchainImageIndex]);
+    transition_image(cmd, _swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
     VK_CHECK(vkEndCommandBuffer(cmd));
 
@@ -164,8 +180,10 @@ void VkRender::Draw() {
     VkResult presentResult = vkQueuePresentKHR(_graphicsQueue, &presentInfo);
     if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) {
         resize_requested = true;
-        return;
     }
+
+    auto drawEnd = std::chrono::system_clock::now();
+    stats.frameTime = std::chrono::duration_cast<std::chrono::microseconds>(drawEnd - drawStart).count();
 
     _frameNumber++;
 }
@@ -203,7 +221,7 @@ void VkRender::draw_background(VkCommandBuffer cmd) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect.pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, _gradientPipelineLayout, 0, 1, &_drawImageDescriptors, 0, nullptr);
     vkCmdPushConstants(cmd, _gradientPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect.data);
-    vkCmdDispatch(cmd, (uint32_t)std::ceil(_drawExtent.width / 16.0), (uint32_t)std::ceil(_drawExtent.height / 16.0), 1);
+    vkCmdDispatch(cmd, static_cast<uint32_t>(std::ceil(_drawExtent.width / 16.0)), static_cast<uint32_t>(std::ceil(_drawExtent.height / 16.0)), 1);
 }
 
 void VkRender::draw_main(VkCommandBuffer cmd) {
@@ -226,7 +244,7 @@ void VkRender::draw_main(VkCommandBuffer cmd) {
 void VkRender::draw_geometry(VkCommandBuffer cmd) {
     std::vector<uint32_t> opaque_draws;
     opaque_draws.reserve(drawCommands.OpaqueSurfaces.size());
-    for (int i = 0; i < (int)drawCommands.OpaqueSurfaces.size(); i++) {
+    for (int i = 0; i < static_cast<int>(drawCommands.OpaqueSurfaces.size()); i++) {
         if (is_visible(drawCommands.OpaqueSurfaces[i], sceneData.viewproj)) {
             opaque_draws.push_back(i);
         }
@@ -252,7 +270,7 @@ void VkRender::draw_geometry(VkCommandBuffer cmd) {
 
     if (!texCache.Cache.empty()) {
         VkWriteDescriptorSet arraySet {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        arraySet.descriptorCount  = (uint32_t)texCache.Cache.size();
+        arraySet.descriptorCount  = static_cast<uint32_t>(texCache.Cache.size());
         arraySet.dstArrayElement  = 0;
         arraySet.descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         arraySet.dstBinding       = 1;
@@ -275,8 +293,8 @@ void VkRender::draw_geometry(VkCommandBuffer cmd) {
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->layout, 0, 1, &globalDescriptor, 0, nullptr);
 
                 VkViewport viewport = {};
-                viewport.width    = (float)_drawExtent.width;
-                viewport.height   = (float)_drawExtent.height;
+                viewport.width    = static_cast<float>(_drawExtent.width);
+                viewport.height   = static_cast<float>(_drawExtent.height);
                 viewport.minDepth = 0.f;
                 viewport.maxDepth = 1.f;
                 vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -424,7 +442,7 @@ GPUMeshBuffers VkRender::uploadMesh(std::span<uint32_t> indices, std::span<Verte
     void* mappedData = staging.info.pMappedData;
 
     memcpy(mappedData, vertices.data(), vertexBufferSize);
-    memcpy((char*)mappedData + vertexBufferSize, indices.data(), indexBufferSize);
+    memcpy(static_cast<char *>(mappedData) + vertexBufferSize, indices.data(), indexBufferSize);
 
     immediate_submit([&](VkCommandBuffer cmd) {
         VkBufferCopy vertexCopy { 0, 0, vertexBufferSize };
@@ -445,6 +463,152 @@ void VkRender::destroy_image(const AllocatedImage& img) {
 
 void VkRender::destroy_buffer(const AllocatedBuffer& buffer) {
     vmaDestroyBuffer(_allocator, buffer.buffer, buffer.allocation);
+}
+
+// ─── ImGui ────────────────────────────────────────────────────────────────
+
+void VkRender::init_imgui() {
+    VkDescriptorPoolSize pool_sizes[] = {
+        { VK_DESCRIPTOR_TYPE_SAMPLER,                1000 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,   1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,   1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+        { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       1000 },
+    };
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_info.maxSets       = 1000;
+    pool_info.poolSizeCount = static_cast<uint32_t>(std::size(pool_sizes));
+    pool_info.pPoolSizes    = pool_sizes;
+    VK_CHECK(vkCreateDescriptorPool(_device, &pool_info, nullptr, &_imguiPool));
+
+    ImGui::CreateContext();
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    ImGui_ImplSDL3_InitForVulkan(_window);
+
+    ImGui_ImplVulkan_InitInfo init_info = {};
+    init_info.ApiVersion      = VK_API_VERSION_1_3;
+    init_info.Instance        = _instance;
+    init_info.PhysicalDevice  = _chosenGPU;
+    init_info.Device          = _device;
+    init_info.QueueFamily     = _graphicsQueueFamily;
+    init_info.Queue           = _graphicsQueue;
+    init_info.DescriptorPool  = _imguiPool;
+    init_info.MinImageCount   = 3;
+    init_info.ImageCount      = 3;
+    init_info.UseDynamicRendering = true;
+
+    init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount    = 1;
+    init_info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &_swapchainImageFormat;
+
+    ImGui_ImplVulkan_Init(&init_info);
+    // Font texture is created automatically on the first NewFrame() call in imgui 1.92+
+
+    _mainDeletionQueue.push_function([this]() {
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        vkDestroyDescriptorPool(_device, _imguiPool, nullptr);
+    });
+
+    FE_CORE_INFO("ImGui initialized");
+}
+
+void VkRender::process_event(SDL_Event& event) {
+    ImGui_ImplSDL3_ProcessEvent(&event);
+    ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
+        mainCamera.processSDLEvent(event);
+    }
+}
+
+void VkRender::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView) {
+    VkRenderingAttachmentInfo colorAttachment = attachment_info(targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingInfo renderInfo = rendering_info(_swapchainExtent, &colorAttachment, nullptr);
+    vkCmdBeginRendering(cmd, &renderInfo);
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+    vkCmdEndRendering(cmd);
+}
+
+void VkRender::draw_imgui_panels() {
+    // ── Performance ──────────────────────────────────────────────────────────
+    if (ImGui::Begin("Performance")) {
+        float frametime_ms = static_cast<float>(stats.frameTime) / 1000.f;
+        float fps = (stats.frameTime > 0) ? (1000000.f / static_cast<float>(stats.frameTime)) : 0.f;
+
+        ImGui::Text("FPS            %.1f", fps);
+        ImGui::Text("Frame time     %.3f ms", frametime_ms);
+        ImGui::Text("Mesh draw time %.3f ms", stats.mesh_draw_time);
+        ImGui::Separator();
+        ImGui::Text("Draw calls  %d", stats.drawcall_count);
+        ImGui::Text("Triangles   %u", stats.triangle_count);
+
+        static std::array<float, 128> frameTimes{};
+        static int ftOffset = 0;
+        frameTimes[ftOffset] = frametime_ms;
+        ftOffset = (ftOffset + 1) % static_cast<int>(frameTimes.size());
+
+        char overlay[32];
+        snprintf(overlay, sizeof(overlay), "%.2f ms", frametime_ms);
+        ImGui::PlotLines("##ft", frameTimes.data(), static_cast<int>(frameTimes.size()),
+                         ftOffset, overlay, 0.f, 50.f, ImVec2(0.f, 80.f));
+    }
+    ImGui::End();
+
+    // ── Background Effects ───────────────────────────────────────────────────
+    if (ImGui::Begin("Background")) {
+        int effectCount = static_cast<int>(backgroundEffects.size());
+        if (effectCount > 0) {
+            ImGui::SliderInt("Effect", &currentBackgroundEffect, 0, effectCount - 1);
+            ComputeEffect& effect = backgroundEffects[currentBackgroundEffect];
+            ImGui::Text("Name: %s", effect.name);
+            ImGui::Separator();
+            if (std::strcmp(effect.name, "gradient") == 0) {
+                ImGui::ColorEdit4("Top color",    &effect.data.data1.x);
+                ImGui::ColorEdit4("Bottom color", &effect.data.data2.x);
+            } else if (std::strcmp(effect.name, "sky") == 0) {
+                ImGui::DragFloat4("Sky params", &effect.data.data1.x, 0.005f, 0.f, 1.f);
+            } else {
+                ImGui::ColorEdit4("Data 1", &effect.data.data1.x);
+                ImGui::ColorEdit4("Data 2", &effect.data.data2.x);
+            }
+        }
+    }
+    ImGui::End();
+
+    // ── Scene / Camera ───────────────────────────────────────────────────────
+    if (ImGui::Begin("Scene")) {
+        ImGui::SeparatorText("Camera");
+        ImGui::Text("Position  (%.2f, %.2f, %.2f)",
+                    mainCamera.position.x, mainCamera.position.y, mainCamera.position.z);
+        ImGui::Text("Pitch %.2f  Yaw %.2f", mainCamera.pitch, mainCamera.yaw);
+
+        ImGui::SeparatorText("Renderer");
+        ImGui::Checkbox("Freeze Rendering", &freeze_rendering);
+        ImGui::Text("Draw extent  %u x %u", _drawExtent.width, _drawExtent.height);
+        ImGui::Text("Frame #%d", _frameNumber);
+
+        ImGui::SeparatorText("Loaded Scenes");
+        if (loadedScenes.empty()) {
+            ImGui::TextDisabled("(none)");
+        } else {
+            for (auto& [name, scene] : loadedScenes) {
+                ImGui::BulletText("%s", name.c_str());
+            }
+        }
+    }
+    ImGui::End();
 }
 
 // ─── Init functions ────────────────────────────────────────────────────────
@@ -559,14 +723,14 @@ void VkRender::init_swapchain() {
 void VkRender::init_commands() {
     VkCommandPoolCreateInfo commandPoolInfo = command_pool_create_info(_graphicsQueueFamily, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
 
-    for (int i = 0; i < FRAME_OVERLAP; i++) {
-        VK_CHECK(vkCreateCommandPool(_device, &commandPoolInfo, nullptr, &_frames[i]._commandPool));
+    for (auto & _frame : _frames) {
+        VK_CHECK(vkCreateCommandPool(_device, &commandPoolInfo, nullptr, &_frame._commandPool));
 
-        VkCommandBufferAllocateInfo cmdAllocInfo = command_buffer_allocate_info(_frames[i]._commandPool, 1);
-        VK_CHECK(vkAllocateCommandBuffers(_device, &cmdAllocInfo, &_frames[i]._mainCommandBuffer));
+        VkCommandBufferAllocateInfo cmdAllocInfo = command_buffer_allocate_info(_frame._commandPool, 1);
+        VK_CHECK(vkAllocateCommandBuffers(_device, &cmdAllocInfo, &_frame._mainCommandBuffer));
 
-        _mainDeletionQueue.push_function([this, i]() {
-            vkDestroyCommandPool(_device, _frames[i]._commandPool, nullptr);
+        _mainDeletionQueue.push_function([this, &_frame]() {
+            vkDestroyCommandPool(_device, _frame._commandPool, nullptr);
         });
     }
 
@@ -887,7 +1051,7 @@ void GLTFMetallic_Roughness::build_pipelines(VkRender* renderer) {
 void GLTFMetallic_Roughness::clear_resources(VkDevice /*device*/) {}
 
 MaterialInstance GLTFMetallic_Roughness::write_material(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& descriptorAllocator) {
-    MaterialInstance matData;
+    MaterialInstance matData{};
     matData.passType = pass;
     matData.pipeline = (pass == MaterialPass::Transparent) ? &transparentPipeline : &opaquePipeline;
     matData.materialSet = descriptorAllocator.allocate(device, materialLayout);

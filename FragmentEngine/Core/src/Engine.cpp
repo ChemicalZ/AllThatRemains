@@ -59,6 +59,8 @@ namespace fe {
     void Engine::handle_events(bool &running, bool &stop_rendering) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            m_renderer->process_event(event);
+
             if (event.type == SDL_EVENT_QUIT) {
                 FE_CORE_INFO("Quit Window event received");
                 running = false;
@@ -106,6 +108,7 @@ namespace fe {
             if (m_renderer->resize_requested) {
                 m_renderer->RequestResize();
             }
+            m_renderer->UpdateScene();
             m_renderer->Draw();
         }
         FE_CORE_INFO("Main loop ended");

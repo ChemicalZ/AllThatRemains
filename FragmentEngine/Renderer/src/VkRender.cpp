@@ -33,6 +33,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <ranges>
 
 
@@ -825,6 +827,99 @@ void VkRender::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView) {
     vkCmdEndRendering(cmd);
 }
 
+void VkRender::saveSceneFile(const std::string& path) {
+    std::ofstream f(path);
+    if (!f) {
+        FE_CORE_ERROR("saveSceneFile: cannot open '{}'", path);
+        return;
+    }
+
+    f << "ATRS_SCENE 1\n";
+    f << "SPAWN_COUNTER " << _spawnCounter << "\n";
+    f << std::fixed << std::setprecision(6);
+    f << "CAMERA_POS " << _cachedCamera.position.x
+      << " " << _cachedCamera.position.y
+      << " " << _cachedCamera.position.z << "\n";
+    f << "CAMERA_PITCH " << _cachedCamera.pitch << "\n";
+    f << "CAMERA_YAW "   << _cachedCamera.yaw   << "\n";
+
+    for (auto& [key, scene] : loadedScenes) {
+        std::string filename = key.substr(0, key.find('#'));
+        std::string filePath = "../assets/" + filename;
+        f << "SCENE " << key << " " << filePath << "\n";
+        const float* m = glm::value_ptr(scene->worldTransform);
+        f << "TRANSFORM";
+        for (int i = 0; i < 16; ++i) f << " " << m[i];
+        f << "\n";
+    }
+
+    FE_CORE_INFO("Scene saved to '{}'", path);
+}
+
+bool VkRender::loadSceneFile(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) {
+        FE_CORE_ERROR("loadSceneFile: cannot open '{}'", path);
+        return false;
+    }
+
+    std::string header;
+    int version = 0;
+    f >> header >> version;
+    if (header != "ATRS_SCENE" || version != 1) {
+        FE_CORE_ERROR("loadSceneFile: invalid file format in '{}'", path);
+        return false;
+    }
+
+    loadedScenes.clear();
+    drawCommands.OpaqueSurfaces.clear();
+    drawCommands.TransparentSurfaces.clear();
+    _selectedScene.clear();
+
+    glm::vec3 camPos {};
+    float camPitch = 0.f, camYaw = 0.f;
+
+    std::string token;
+    while (f >> token) {
+        if (token == "SPAWN_COUNTER") {
+            f >> _spawnCounter;
+        } else if (token == "CAMERA_POS") {
+            f >> camPos.x >> camPos.y >> camPos.z;
+        } else if (token == "CAMERA_PITCH") {
+            f >> camPitch;
+        } else if (token == "CAMERA_YAW") {
+            f >> camYaw;
+        } else if (token == "SCENE") {
+            std::string key, filePath;
+            f >> key >> filePath;
+
+            std::string transformToken;
+            f >> transformToken;
+            glm::mat4 transform;
+            float* m = glm::value_ptr(transform);
+            for (int i = 0; i < 16; ++i) f >> m[i];
+
+            auto result = loadGltf(this, filePath);
+            if (result.has_value()) {
+                setSceneTransform(**result, transform);
+                loadedScenes[key] = *result;
+            } else {
+                FE_CORE_WARN("loadSceneFile: failed to load '{}'", filePath);
+            }
+        }
+    }
+
+    _pendingCamera = { true, camPos, camPitch, camYaw };
+    FE_CORE_INFO("Scene loaded from '{}'", path);
+    return true;
+}
+
+VkRender::PendingCameraLoad VkRender::consumePendingCamera() {
+    auto result = _pendingCamera;
+    _pendingCamera.active = false;
+    return result;
+}
+
 void VkRender::draw_imgui_panels() {
     // ── Performance ──────────────────────────────────────────────────────────
     if (ImGui::Begin("Performance")) {
@@ -952,7 +1047,6 @@ void VkRender::draw_imgui_panels() {
                 "structure_mat.glb",
             };
             static int   selectedAsset  = 0;
-            static int   spawnCounter   = 0;
             static float spawnDistance  = 5.f;
             static char  statusMsg[64]  = "";
 
@@ -960,7 +1054,7 @@ void VkRender::draw_imgui_panels() {
             ImGui::SliderFloat("Spawn Distance", &spawnDistance, 0.5f, 100.f, "%.1f");
 
             if (ImGui::Button("Add to Scene")) {
-                std::string key  = std::string(kAssets[selectedAsset]) + "#" + std::to_string(++spawnCounter);
+                std::string key  = std::string(kAssets[selectedAsset]) + "#" + std::to_string(++_spawnCounter);
                 std::string path = std::string("../assets/") + kAssets[selectedAsset];
                 auto result = loadGltf(this, path);
                 if (result.has_value()) {
@@ -984,12 +1078,32 @@ void VkRender::draw_imgui_panels() {
                     snprintf(statusMsg, sizeof(statusMsg), "Added %s", key.c_str());
                 } else {
                     snprintf(statusMsg, sizeof(statusMsg), "Failed to load %s", kAssets[selectedAsset]);
-                    --spawnCounter;
+                    --_spawnCounter;
                 }
             }
             if (statusMsg[0] != '\0') {
                 ImGui::TextDisabled("%s", statusMsg);
             }
+        }
+
+        ImGui::SeparatorText("Scene File");
+        {
+            static char scenePath[256] = "scene.atrs";
+            static char sceneFileStatus[128] = "";
+
+            ImGui::InputText("Path##sceneFile", scenePath, sizeof(scenePath));
+            if (ImGui::Button("Save")) {
+                saveSceneFile(scenePath);
+                snprintf(sceneFileStatus, sizeof(sceneFileStatus), "Saved: %s", scenePath);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) {
+                bool ok = loadSceneFile(scenePath);
+                snprintf(sceneFileStatus, sizeof(sceneFileStatus),
+                         ok ? "Loaded: %s" : "Failed: %s", scenePath);
+            }
+            if (sceneFileStatus[0] != '\0')
+                ImGui::TextDisabled("%s", sceneFileStatus);
         }
     }
     ImGui::End();

@@ -145,6 +145,13 @@ namespace fe {
                 m_renderer->RequestResize();
             }
 
+            if (auto cam = m_renderer->consumePendingCamera(); cam.active) {
+                m_camera.position = cam.position;
+                m_camera.pitch    = cam.pitch;
+                m_camera.yaw      = cam.yaw;
+                m_camera.velocity = glm::vec3(0.f);
+            }
+
             accumulator += frameTime;
             while (accumulator >= kFixedStep) {
                 m_camera.update(kFixedStep);

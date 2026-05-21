@@ -201,6 +201,18 @@ namespace fe {
         std::string _selectedScene;
         int _gizmoOperation { 7 };  // ImGuizmo::TRANSLATE
         int _gizmoMode      { 1 };  // ImGuizmo::WORLD
+        int _spawnCounter   { 0 };
+
+        void saveSceneFile(const std::string& path);
+        bool loadSceneFile(const std::string& path);
+
+        struct PendingCameraLoad {
+            bool active { false };
+            glm::vec3 position {};
+            float pitch { 0.f };
+            float yaw   { 0.f };
+        };
+        PendingCameraLoad consumePendingCamera();
 
         VkDevice _device;
 
@@ -318,5 +330,7 @@ namespace fe {
         void init_imgui();
         void draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView);
         void draw_imgui_panels();
+
+        PendingCameraLoad _pendingCamera;
     };
 }

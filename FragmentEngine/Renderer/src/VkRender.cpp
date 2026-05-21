@@ -882,9 +882,6 @@ void VkRender::draw_imgui_panels() {
             }
             if (!toRemove.empty()) {
                 loadedScenes.erase(toRemove);
-                // drawCommands was built by UpdateScene() before this deletion.
-                // Flush it so draw_geometry() doesn't touch destroyed VkBuffers
-                // or dangling MaterialInstance* from the just-freed LoadedGLTF.
                 drawCommands.OpaqueSurfaces.clear();
                 drawCommands.TransparentSurfaces.clear();
             }

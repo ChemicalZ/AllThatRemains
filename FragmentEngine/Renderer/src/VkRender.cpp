@@ -93,11 +93,6 @@ VkRender::VkRender(SDL_Window* window) {
 
     _isInitialized = true;
 
-    mainCamera.velocity = glm::vec3(0.f);
-    mainCamera.position = glm::vec3(0.f, 0.f, 5.f);
-    mainCamera.pitch = 0;
-    mainCamera.yaw = 0;
-
     FE_CORE_INFO("Vulkan Renderer successfully initialized");
 }
 
@@ -207,10 +202,12 @@ void VkRender::Draw() {
     _frameNumber++;
 }
 
-void VkRender::UpdateScene() {
-    mainCamera.update();
+void VkRender::UpdateScene(const Camera& cam) {
+    _cachedCamera.position = cam.position;
+    _cachedCamera.pitch    = cam.pitch;
+    _cachedCamera.yaw      = cam.yaw;
 
-    glm::mat4 view = mainCamera.getViewMatrix();
+    glm::mat4 view = cam.getViewMatrix();
     glm::mat4 projection = glm::perspective(glm::radians(70.f),
         static_cast<float>(_windowExtent.width) / static_cast<float>(_windowExtent.height),
         10000.f, 0.1f);
@@ -220,11 +217,11 @@ void VkRender::UpdateScene() {
     sceneData.proj     = projection;
     sceneData.viewproj = projection * view;
 
-    sceneData.ambientColor     = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
+    sceneData.ambientColor      = glm::vec4(0.1f, 0.1f, 0.1f, 1.0f);
     sceneData.sunlightDirection = glm::vec4(0.f, 1.f, 0.5f, 1.0f);
-    sceneData.sunlightColor    = glm::vec4(1.0f);
+    sceneData.sunlightColor     = glm::vec4(1.0f);
 
-    for (auto &scene: loadedScenes | std::views::values) {
+    for (auto& scene : loadedScenes | std::views::values) {
         scene->Draw(glm::mat4{1.f}, drawCommands);
     }
 }
@@ -342,6 +339,16 @@ void VkRender::draw_geometry(VkCommandBuffer cmd) {
     for (auto& r : opaque_draws) {
         draw(drawCommands.OpaqueSurfaces[r]);
     }
+
+    // Sort transparent surfaces back-to-front (painter's algorithm)
+    const glm::vec3 camPos = _cachedCamera.position;
+    std::sort(drawCommands.TransparentSurfaces.begin(), drawCommands.TransparentSurfaces.end(),
+        [&camPos](const RenderObject& a, const RenderObject& b) {
+            const glm::vec3 wa = glm::vec3(a.transform * glm::vec4(a.bounds.origin, 1.f));
+            const glm::vec3 wb = glm::vec3(b.transform * glm::vec4(b.bounds.origin, 1.f));
+            return glm::dot(wa - camPos, wa - camPos) > glm::dot(wb - camPos, wb - camPos);
+        });
+
     for (auto& r : drawCommands.TransparentSurfaces) {
         draw(r);
     }
@@ -368,6 +375,30 @@ void VkRender::immediate_submit(std::function<void(VkCommandBuffer cmd)>&& funct
     VkSubmitInfo2 submit = submit_info(&cmdinfo, nullptr, nullptr);
     VK_CHECK(vkQueueSubmit2(_graphicsQueue, 1, &submit, _immFence));
     VK_CHECK(vkWaitForFences(_device, 1, &_immFence, true, 9999999999));
+}
+
+// ─── Transfer submit ──────────────────────────────────────────────────────
+
+void VkRender::transfer_submit(
+    std::function<void(VkCommandBuffer)>&& transferFn,
+    std::function<void(VkCommandBuffer)>&& acquireFn)
+{
+    // Phase 1: copy + release barriers on the dedicated transfer queue
+    VK_CHECK(vkResetFences(_device, 1, &_transferFence));
+    VK_CHECK(vkResetCommandBuffer(_transferCommandBuffer, 0));
+
+    VkCommandBufferBeginInfo begin = command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+    VK_CHECK(vkBeginCommandBuffer(_transferCommandBuffer, &begin));
+    transferFn(_transferCommandBuffer);
+    VK_CHECK(vkEndCommandBuffer(_transferCommandBuffer));
+
+    VkCommandBufferSubmitInfo xferCmd = command_buffer_submit_info(_transferCommandBuffer);
+    VkSubmitInfo2 xferSubmit = submit_info(&xferCmd, nullptr, nullptr);
+    VK_CHECK(vkQueueSubmit2(_transferQueue, 1, &xferSubmit, _transferFence));
+    VK_CHECK(vkWaitForFences(_device, 1, &_transferFence, true, 9999999999));
+
+    // Phase 2: acquire barriers on the graphics queue
+    immediate_submit(std::move(acquireFn));
 }
 
 // ─── Buffer / Image / Mesh creation ───────────────────────────────────────
@@ -417,22 +448,71 @@ AllocatedImage VkRender::create_image(void* data, VkExtent3D size, VkFormat form
 
     AllocatedImage new_image = create_image(size, format, usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, mipmapped);
 
-    immediate_submit([&](VkCommandBuffer cmd) {
-        transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy copyRegion = {};
+    copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copyRegion.imageSubresource.layerCount = 1;
+    copyRegion.imageExtent = size;
 
-        VkBufferImageCopy copyRegion = {};
-        copyRegion.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
-        copyRegion.imageSubresource.layerCount     = 1;
-        copyRegion.imageExtent = size;
+    const VkImageSubresourceRange mip0 { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
-        vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+    if (_hasDedicatedTransfer && !mipmapped) {
+        transfer_submit(
+            [&](VkCommandBuffer cmd) {
+                // Transition + copy on transfer queue
+                transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
-        if (mipmapped) {
-            generate_mipmaps(cmd, new_image.image, VkExtent2D{new_image.imageExtent.width, new_image.imageExtent.height});
-        } else {
-            transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        }
-    });
+                // Release ownership: transfer → graphics, layout stays TRANSFER_DST
+                VkImageMemoryBarrier2 release {
+                    .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                    .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    .dstStageMask        = VK_PIPELINE_STAGE_2_NONE,
+                    .dstAccessMask       = VK_ACCESS_2_NONE,
+                    .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = _transferQueueFamily,
+                    .dstQueueFamilyIndex = _graphicsQueueFamily,
+                    .image               = new_image.image,
+                    .subresourceRange    = mip0,
+                };
+                VkDependencyInfo dep { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &release };
+                vkCmdPipelineBarrier2(cmd, &dep);
+            },
+            [&](VkCommandBuffer cmd) {
+                // Acquire ownership on graphics queue
+                VkImageMemoryBarrier2 acquire {
+                    .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                    .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
+                    .srcAccessMask       = VK_ACCESS_2_NONE,
+                    .dstStageMask        = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    .dstAccessMask       = VK_ACCESS_2_SHADER_READ_BIT,
+                    .oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = _transferQueueFamily,
+                    .dstQueueFamilyIndex = _graphicsQueueFamily,
+                    .image               = new_image.image,
+                    .subresourceRange    = mip0,
+                };
+                VkDependencyInfo dep { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &acquire };
+                vkCmdPipelineBarrier2(cmd, &dep);
+            }
+        );
+    } else {
+        // Fallback: single graphics-queue submit (also used for mipmapped images
+        // since vkCmdBlitImage requires the graphics queue)
+        immediate_submit([&](VkCommandBuffer cmd) {
+            transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vkCmdCopyBufferToImage(cmd, uploadbuffer.buffer, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+            if (mipmapped) {
+                generate_mipmaps(cmd, new_image.image, VkExtent2D{new_image.imageExtent.width, new_image.imageExtent.height});
+            } else {
+                transition_image(cmd, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            }
+        });
+    }
 
     destroy_buffer(uploadbuffer);
     return new_image;
@@ -458,15 +538,64 @@ GPUMeshBuffers VkRender::uploadMesh(std::span<uint32_t> indices, std::span<Verte
     void* mappedData = staging.info.pMappedData;
 
     memcpy(mappedData, vertices.data(), vertexBufferSize);
-    memcpy(static_cast<char *>(mappedData) + vertexBufferSize, indices.data(), indexBufferSize);
+    memcpy(static_cast<char*>(mappedData) + vertexBufferSize, indices.data(), indexBufferSize);
 
-    immediate_submit([&](VkCommandBuffer cmd) {
-        VkBufferCopy vertexCopy { 0, 0, vertexBufferSize };
-        vkCmdCopyBuffer(cmd, staging.buffer, newSurface.vertexBuffer.buffer, 1, &vertexCopy);
+    if (_hasDedicatedTransfer) {
+        transfer_submit(
+            [&](VkCommandBuffer cmd) {
+                VkBufferCopy vertexCopy { 0, 0, vertexBufferSize };
+                vkCmdCopyBuffer(cmd, staging.buffer, newSurface.vertexBuffer.buffer, 1, &vertexCopy);
+                VkBufferCopy indexCopy { vertexBufferSize, 0, indexBufferSize };
+                vkCmdCopyBuffer(cmd, staging.buffer, newSurface.indexBuffer.buffer, 1, &indexCopy);
 
-        VkBufferCopy indexCopy { vertexBufferSize, 0, indexBufferSize };
-        vkCmdCopyBuffer(cmd, staging.buffer, newSurface.indexBuffer.buffer, 1, &indexCopy);
-    });
+                // Release ownership to graphics queue
+                std::array<VkBufferMemoryBarrier2, 2> release {{
+                    { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                      .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      .dstStageMask = VK_PIPELINE_STAGE_2_NONE, .dstAccessMask = VK_ACCESS_2_NONE,
+                      .srcQueueFamilyIndex = _transferQueueFamily, .dstQueueFamilyIndex = _graphicsQueueFamily,
+                      .buffer = newSurface.vertexBuffer.buffer, .offset = 0, .size = VK_WHOLE_SIZE },
+                    { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                      .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                      .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      .dstStageMask = VK_PIPELINE_STAGE_2_NONE, .dstAccessMask = VK_ACCESS_2_NONE,
+                      .srcQueueFamilyIndex = _transferQueueFamily, .dstQueueFamilyIndex = _graphicsQueueFamily,
+                      .buffer = newSurface.indexBuffer.buffer, .offset = 0, .size = VK_WHOLE_SIZE },
+                }};
+                VkDependencyInfo dep { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .bufferMemoryBarrierCount = 2, .pBufferMemoryBarriers = release.data() };
+                vkCmdPipelineBarrier2(cmd, &dep);
+            },
+            [&](VkCommandBuffer cmd) {
+                // Acquire ownership on graphics queue
+                std::array<VkBufferMemoryBarrier2, 2> acquire {{
+                    { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                      .srcStageMask = VK_PIPELINE_STAGE_2_NONE, .srcAccessMask = VK_ACCESS_2_NONE,
+                      .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+                      .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT,
+                      .srcQueueFamilyIndex = _transferQueueFamily, .dstQueueFamilyIndex = _graphicsQueueFamily,
+                      .buffer = newSurface.vertexBuffer.buffer, .offset = 0, .size = VK_WHOLE_SIZE },
+                    { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                      .srcStageMask = VK_PIPELINE_STAGE_2_NONE, .srcAccessMask = VK_ACCESS_2_NONE,
+                      .dstStageMask = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+                      .dstAccessMask = VK_ACCESS_2_INDEX_READ_BIT,
+                      .srcQueueFamilyIndex = _transferQueueFamily, .dstQueueFamilyIndex = _graphicsQueueFamily,
+                      .buffer = newSurface.indexBuffer.buffer, .offset = 0, .size = VK_WHOLE_SIZE },
+                }};
+                VkDependencyInfo dep { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                    .bufferMemoryBarrierCount = 2, .pBufferMemoryBarriers = acquire.data() };
+                vkCmdPipelineBarrier2(cmd, &dep);
+            }
+        );
+    } else {
+        immediate_submit([&](VkCommandBuffer cmd) {
+            VkBufferCopy vertexCopy { 0, 0, vertexBufferSize };
+            vkCmdCopyBuffer(cmd, staging.buffer, newSurface.vertexBuffer.buffer, 1, &vertexCopy);
+            VkBufferCopy indexCopy { vertexBufferSize, 0, indexBufferSize };
+            vkCmdCopyBuffer(cmd, staging.buffer, newSurface.indexBuffer.buffer, 1, &indexCopy);
+        });
+    }
 
     destroy_buffer(staging);
     return newSurface;
@@ -543,10 +672,11 @@ void VkRender::init_imgui() {
 
 void VkRender::process_event(SDL_Event& event) {
     ImGui_ImplSDL3_ProcessEvent(&event);
-    ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantCaptureKeyboard && !io.WantCaptureMouse) {
-        mainCamera.processSDLEvent(event);
-    }
+}
+
+bool VkRender::imguiWantsInput() const {
+    const ImGuiIO& io = ImGui::GetIO();
+    return io.WantCaptureKeyboard || io.WantCaptureMouse;
 }
 
 void VkRender::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView) {
@@ -607,8 +737,8 @@ void VkRender::draw_imgui_panels() {
     if (ImGui::Begin("Scene")) {
         ImGui::SeparatorText("Camera");
         ImGui::Text("Position  (%.2f, %.2f, %.2f)",
-                    mainCamera.position.x, mainCamera.position.y, mainCamera.position.z);
-        ImGui::Text("Pitch %.2f  Yaw %.2f", mainCamera.pitch, mainCamera.yaw);
+                    _cachedCamera.position.x, _cachedCamera.position.y, _cachedCamera.position.z);
+        ImGui::Text("Pitch %.2f  Yaw %.2f", _cachedCamera.pitch, _cachedCamera.yaw);
 
         ImGui::SeparatorText("Renderer");
         ImGui::Checkbox("Freeze Rendering", &freeze_rendering);
@@ -731,6 +861,21 @@ void VkRender::init_vulkan() {
     _graphicsQueue       = vkbDevice.get_queue(vkb::QueueType::graphics).value();
     _graphicsQueueFamily = vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
 
+    {
+        auto tq  = vkbDevice.get_queue(vkb::QueueType::transfer);
+        auto tqi = vkbDevice.get_queue_index(vkb::QueueType::transfer);
+        if (tq && tqi) {
+            _transferQueue       = tq.value();
+            _transferQueueFamily = tqi.value();
+            _hasDedicatedTransfer = (_transferQueueFamily != _graphicsQueueFamily);
+        } else {
+            _transferQueue       = _graphicsQueue;
+            _transferQueueFamily = _graphicsQueueFamily;
+        }
+        FE_CORE_INFO("Transfer queue family: {} (dedicated: {})",
+            _transferQueueFamily, _hasDedicatedTransfer);
+    }
+
     VmaVulkanFunctions vmaFunctions = {};
     vmaFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     vmaFunctions.vkGetDeviceProcAddr   = vkGetDeviceProcAddr;
@@ -808,6 +953,22 @@ void VkRender::init_commands() {
     _mainDeletionQueue.push_function([this]() {
         vkDestroyCommandPool(_device, _immCommandPool, nullptr);
     });
+
+    if (_hasDedicatedTransfer) {
+        VkCommandPoolCreateInfo xferPoolInfo = command_pool_create_info(
+            _transferQueueFamily, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
+        VK_CHECK(vkCreateCommandPool(_device, &xferPoolInfo, nullptr, &_transferCommandPool));
+        VkCommandBufferAllocateInfo xferAlloc = command_buffer_allocate_info(_transferCommandPool, 1);
+        VK_CHECK(vkAllocateCommandBuffers(_device, &xferAlloc, &_transferCommandBuffer));
+
+        VkFenceCreateInfo xferFenceInfo = fence_create_info(VK_FENCE_CREATE_SIGNALED_BIT);
+        VK_CHECK(vkCreateFence(_device, &xferFenceInfo, nullptr, &_transferFence));
+
+        _mainDeletionQueue.push_function([this]() {
+            vkDestroyFence(_device, _transferFence, nullptr);
+            vkDestroyCommandPool(_device, _transferCommandPool, nullptr);
+        });
+    }
 }
 
 void VkRender::init_sync_structures() {
@@ -1252,6 +1413,15 @@ TextureID TextureCache::AddTexture(const VkImageView& image, VkSampler sampler) 
 void TextureCache::FreeTexturesWithView(VkImageView view, VkDescriptorImageInfo fallback) {
     for (uint32_t i = 0; i < static_cast<uint32_t>(Cache.size()); i++) {
         if (Cache[i].imageView == view) {
+            Cache[i] = fallback;
+            _freeSlots.push_back(i);
+        }
+    }
+}
+
+void TextureCache::FreeTexturesWithSampler(VkSampler sampler, VkDescriptorImageInfo fallback) {
+    for (uint32_t i = 0; i < static_cast<uint32_t>(Cache.size()); i++) {
+        if (Cache[i].sampler == sampler) {
             Cache[i] = fallback;
             _freeSlots.push_back(i);
         }

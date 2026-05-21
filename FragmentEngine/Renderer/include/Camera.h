@@ -17,7 +17,7 @@ public:
     glm::mat4 getRotationMatrix() const;
 
     void processSDLEvent(SDL_Event& e);
-    void update();
+    void update(float dt);
 };
 
 } // namespace fe

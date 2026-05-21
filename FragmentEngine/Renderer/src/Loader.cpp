@@ -179,20 +179,28 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
         file.samplers.push_back(newSampler);
     }
 
-    // Images
+    // Images — loaded through ResourceManager for cross-scene texture sharing.
+    // The key is "<filePath>/<imageName>" to prevent collisions between files.
     std::vector<std::shared_ptr<MeshAsset>>  meshes;
     std::vector<std::shared_ptr<Node>>        nodes;
-    std::vector<AllocatedImage>               images;
+    std::vector<AllocatedImage>               images; // local by-value for material indexing
     std::vector<std::shared_ptr<GLTFMaterial>> materials;
 
+    const std::string scenePrefix = std::string(filePath) + "/";
     for (fastgltf::Image& image : gltf.images) {
-        auto img = load_image(renderer, gltf, image);
-        if (img.has_value()) {
-            images.push_back(*img);
-            file.images[image.name.c_str()] = *img;
+        const std::string key = scenePrefix + image.name.c_str();
+        auto sp = renderer->resourceManager.getOrCreate(key, [&]() -> std::optional<AllocatedImage> {
+            return load_image(renderer, gltf, image);
+        });
+        if (sp) {
+            images.push_back(*sp);
+            file.images[image.name.c_str()] = sp;
         } else {
-            images.push_back(renderer->_errorCheckerboardImage);
+            // Load failed — use non-owning reference to error checkerboard
             FE_CORE_WARN("Failed to load texture '{}', using error checkerboard", image.name);
+            images.push_back(renderer->_errorCheckerboardImage);
+            file.images[image.name.c_str()] = std::shared_ptr<AllocatedImage>(
+                &renderer->_errorCheckerboardImage, [](AllocatedImage*) {} );
         }
     }
 
@@ -413,37 +421,51 @@ void LoadedGLTF::clearAll()
 {
     VkDevice dv = creator->_device;
 
-    // Evict owned textures from global cache first (so next frame descriptor
-    // update uses only valid fallback entries).
-    VkDescriptorImageInfo fallback {
+    // 1. Evict from TextureCache while shared_ptrs (and their imageViews) are
+    //    still alive. Non-owning error-checkerboard entries are skipped.
+    const VkDescriptorImageInfo fallback {
         .sampler     = creator->_defaultSamplerNearest,
         .imageView   = creator->_errorCheckerboardImage.imageView,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
     };
-    for (auto& [k, v] : images) {
-        if (v.image == creator->_errorCheckerboardImage.image) continue;
-        creator->texCache.FreeTexturesWithView(v.imageView, fallback);
+    // Evict by image — only when this scene is the last holder. If use_count > 1
+    // another scene shares the image (via ResourceManager) and its material
+    // TextureIDs still index that slot; evicting would corrupt the survivor.
+    for (auto& [k, sp] : images) {
+        if (!sp || sp.get() == &creator->_errorCheckerboardImage) continue;
+        if (sp.use_count() == 1) {
+            creator->texCache.FreeTexturesWithView(sp->imageView, fallback);
+        }
     }
 
-    // Guarantee no in-flight GPU frame still references these resources.
-    // clearAll() runs during the CPU portion of a frame while the previous
-    // frame's GPU submission may still be in flight.
+    // Evict by sampler — always. GLTF samplers are created per-loadGltf call and
+    // are never shared across scenes. Any cache entry referencing one of our
+    // samplers must be removed before the sampler handle is destroyed, regardless
+    // of whether the paired image is still alive in another scene.
+    for (auto& sampler : samplers) {
+        creator->texCache.FreeTexturesWithSampler(sampler, fallback);
+    }
+
+    // 2. Drain GPU — clearAll() runs mid-frame while the previous frame's
+    //    GPU submission may still be in flight. Must finish before destroying
+    //    any Vulkan resources.
     vkDeviceWaitIdle(dv);
 
+    // 3. Destroy mesh buffers (not ResourceManager-managed).
     for (auto& [k, v] : meshes) {
         creator->destroy_buffer(v->meshBuffers.indexBuffer);
         creator->destroy_buffer(v->meshBuffers.vertexBuffer);
     }
 
-    for (auto& [k, v] : images) {
-        if (v.image == creator->_errorCheckerboardImage.image) continue;
-        creator->destroy_image(v);
-    }
+    // 4. Release image shared_ptrs. If this is the last reference, the custom
+    //    deleter calls destroy_image — safe because GPU is idle from step 2.
+    //    Non-owning error-checkerboard ptrs have a no-op deleter.
+    images.clear();
 
+    // 5. Samplers, descriptor pool, material constants buffer.
     for (auto& sampler : samplers) {
         vkDestroySampler(dv, sampler, nullptr);
     }
-
     descriptorPool.destroy_pools(dv);
     creator->destroy_buffer(materialDataBuffer);
 }

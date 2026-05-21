@@ -6,6 +6,7 @@
         src/Pipelines.cpp
         src/Images.cpp
         src/Camera.cpp
+        src/ResourceManager.cpp
 )
 
 target_include_directories(FragmentRenderer PUBLIC

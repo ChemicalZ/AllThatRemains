@@ -2,8 +2,12 @@
 
 #include <exception>
 #include <stdexcept>
+#include <chrono>
+#include <thread>
+#include <algorithm>
 #include <SDL3/SDL.h>
 #include <string>
+#include <glm/glm.hpp>
 #include "../../Log/include/LogInternal.h"
 #include "VkRender.h"
 namespace fe {
@@ -47,19 +51,25 @@ namespace fe {
     }
 
     void Engine::initRenderer() {
-
         try {
             m_renderer = new VkRender(m_window);
         } catch (std::exception &e) {
             throw std::runtime_error("Renderer failed to initialize: " + std::string(e.what()));
         }
+        m_camera.velocity = glm::vec3(0.f);
+        m_camera.position = glm::vec3(0.f, 0.f, 5.f);
+        m_camera.pitch    = 0;
+        m_camera.yaw      = 0;
         FE_CORE_INFO("Renderer initialized");
     }
 
     void Engine::handle_events(bool &running, bool &stop_rendering) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            m_renderer->process_event(event);
+            m_renderer->process_event(event); // ImGui first
+            if (!m_renderer->imguiWantsInput()) {
+                m_camera.processSDLEvent(event);
+            }
 
             if (event.type == SDL_EVENT_QUIT) {
                 FE_CORE_INFO("Quit Window event received");
@@ -94,21 +104,40 @@ namespace fe {
     }
 
     void Engine::mainLoop() {
-        bool running = true;
+        bool running        = true;
         bool stop_rendering = false;
+
+        using Clock   = std::chrono::steady_clock;
+        using Seconds = std::chrono::duration<float>;
+        constexpr float kFixedStep = 1.f / 60.f;
+
+        auto prevTime  = Clock::now();
+        float accumulator = 0.f;
+
         FE_CORE_INFO("Main loop started");
         while (running) {
+            auto now = Clock::now();
+            float frameTime = std::chrono::duration_cast<Seconds>(now - prevTime).count();
+            prevTime = now;
+            frameTime = std::min(frameTime, 0.25f); // clamp spiral-of-death
+
             handle_events(running, stop_rendering);
-            // Render
+
             if (stop_rendering) {
-                // throttle the speed to avoid the endless spinning
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
             if (m_renderer->resize_requested) {
                 m_renderer->RequestResize();
             }
-            m_renderer->UpdateScene();
+
+            accumulator += frameTime;
+            while (accumulator >= kFixedStep) {
+                m_camera.update(kFixedStep);
+                accumulator -= kFixedStep;
+            }
+
+            m_renderer->UpdateScene(m_camera);
             m_renderer->Draw();
         }
         FE_CORE_INFO("Main loop ended");

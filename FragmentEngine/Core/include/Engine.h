@@ -4,6 +4,7 @@
 
 #pragma once
 #include <SDL3/SDL_events.h>
+#include "Camera.h"
 
 struct SDL_Window;
 
@@ -29,5 +30,6 @@ namespace fe {
         int m_height;
         SDL_Window *m_window;
         VkRender *m_renderer;
+        Camera m_camera;
     };
 } // fe

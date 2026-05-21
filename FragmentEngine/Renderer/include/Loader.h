@@ -36,7 +36,7 @@ struct MeshAsset {
 struct LoadedGLTF : public IRenderable {
     std::unordered_map<std::string, std::shared_ptr<MeshAsset>> meshes;
     std::unordered_map<std::string, std::shared_ptr<Node>> nodes;
-    std::unordered_map<std::string, AllocatedImage> images;
+    std::unordered_map<std::string, std::shared_ptr<AllocatedImage>> images;
     std::unordered_map<std::string, std::shared_ptr<GLTFMaterial>> materials;
 
     std::vector<std::shared_ptr<Node>> topNodes;

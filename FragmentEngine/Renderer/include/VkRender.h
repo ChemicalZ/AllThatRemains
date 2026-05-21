@@ -4,6 +4,7 @@
 #include "Types.h"
 #include "Camera.h"
 #include "Loader.h"
+#include "ResourceManager.h"
 
 #include <unordered_map>
 #include <chrono>
@@ -84,6 +85,7 @@ namespace fe {
         std::unordered_map<std::string, TextureID> NameMap;
         TextureID AddTexture(const VkImageView& image, VkSampler sampler);
         void FreeTexturesWithView(VkImageView view, VkDescriptorImageInfo fallback);
+        void FreeTexturesWithSampler(VkSampler sampler, VkDescriptorImageInfo fallback);
     };
 
     struct GLTFMetallic_Roughness {
@@ -139,9 +141,10 @@ namespace fe {
         ~VkRender();
 
         void Draw();
-        void UpdateScene();
+        void UpdateScene(const Camera& cam);
         void RequestResize();
         void process_event(SDL_Event& event);
+        bool imguiWantsInput() const;
 
         AllocatedBuffer create_buffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
         AllocatedImage create_image(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
@@ -166,8 +169,14 @@ namespace fe {
         TextureCache texCache;
 
         GPUSceneData sceneData;
-        Camera mainCamera;
         EngineStats stats;
+        ResourceManager resourceManager { this };
+
+        struct CachedCameraData {
+            glm::vec3 position {};
+            float pitch { 0.f };
+            float yaw   { 0.f };
+        } _cachedCamera;
 
         DrawContext drawCommands;
         std::unordered_map<std::string, std::shared_ptr<LoadedGLTF>> loadedScenes;
@@ -211,6 +220,17 @@ namespace fe {
 
         VkQueue _graphicsQueue;
         uint32_t _graphicsQueueFamily;
+
+        // Dedicated transfer queue (may equal graphics if hardware doesn't expose one)
+        VkQueue    _transferQueue        { VK_NULL_HANDLE };
+        uint32_t   _transferQueueFamily  { 0 };
+        bool       _hasDedicatedTransfer { false };
+        VkFence         _transferFence         { VK_NULL_HANDLE };
+        VkCommandPool   _transferCommandPool   { VK_NULL_HANDLE };
+        VkCommandBuffer _transferCommandBuffer { VK_NULL_HANDLE };
+
+        void transfer_submit(std::function<void(VkCommandBuffer)>&& transferFn,
+                             std::function<void(VkCommandBuffer)>&& acquireFn);
 
         // Draw resources
         VkExtent2D _drawExtent;

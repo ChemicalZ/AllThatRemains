@@ -42,10 +42,11 @@ void Camera::processSDLEvent(SDL_Event& e)
     }
 }
 
-void Camera::update()
+void Camera::update(float dt)
 {
+    constexpr float kMoveSpeed = 30.f; // units per second (matches old 0.5/frame at 60 Hz)
     glm::mat4 cameraRotation = getRotationMatrix();
-    position += glm::vec3(cameraRotation * glm::vec4(velocity * 0.5f, 0.f));
+    position += glm::vec3(cameraRotation * glm::vec4(velocity * kMoveSpeed * dt, 0.f));
 }
 
 } // namespace fe

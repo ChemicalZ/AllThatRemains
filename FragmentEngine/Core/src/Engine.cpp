@@ -67,6 +67,19 @@ namespace fe {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             m_renderer->process_event(event); // ImGui first
+
+            // Right-click: lock mouse to window for rotation, release when done.
+            // Only enter grab if ImGui isn't consuming the click.
+            if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+                && event.button.button == SDL_BUTTON_RIGHT
+                && !m_renderer->imguiWantsInput()) {
+                SDL_SetWindowRelativeMouseMode(m_window, true);
+            }
+            if (event.type == SDL_EVENT_MOUSE_BUTTON_UP
+                && event.button.button == SDL_BUTTON_RIGHT) {
+                SDL_SetWindowRelativeMouseMode(m_window, false);
+            }
+
             if (!m_renderer->imguiWantsInput()) {
                 m_camera.processSDLEvent(event);
             }
@@ -86,6 +99,7 @@ namespace fe {
             if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
                 FE_CORE_INFO("Window focus lost");
                 stop_rendering = true;
+                SDL_SetWindowRelativeMouseMode(m_window, false);
             }
             if (event.type == SDL_EVENT_WINDOW_RESIZED) {
                 FE_CORE_INFO("Window resized to {}x{}", event.window.data1, event.window.data2);

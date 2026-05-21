@@ -36,7 +36,14 @@ void Camera::processSDLEvent(SDL_Event& e)
         if (e.key.scancode == SDL_SCANCODE_D) { velocity.x = 0; }
     }
 
-    if (e.type == SDL_EVENT_MOUSE_MOTION) {
+    if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_RIGHT) {
+        _rightMouseHeld = true;
+    }
+    if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_RIGHT) {
+        _rightMouseHeld = false;
+    }
+
+    if (e.type == SDL_EVENT_MOUSE_MOTION && _rightMouseHeld) {
         yaw += e.motion.xrel / 200.f;
         pitch -= e.motion.yrel / 200.f;
     }

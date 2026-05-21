@@ -11,6 +11,7 @@
 
 target_include_directories(FragmentRenderer PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../ThirdParty
 )
 
 target_compile_definitions(FragmentRenderer PUBLIC

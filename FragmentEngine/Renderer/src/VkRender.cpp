@@ -34,8 +34,8 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
-#include <iomanip>
 #include <ranges>
+#include "json.hpp"
 
 
 constexpr bool bUseValidationLayers = true;
@@ -828,31 +828,32 @@ void VkRender::draw_imgui(VkCommandBuffer cmd, VkImageView targetImageView) {
 }
 
 void VkRender::saveSceneFile(const std::string& path) {
+    nlohmann::json j;
+    j["version"]      = 1;
+    j["spawnCounter"] = _spawnCounter;
+    j["camera"] = {
+        {"position", { _cachedCamera.position.x, _cachedCamera.position.y, _cachedCamera.position.z }},
+        {"pitch",    _cachedCamera.pitch},
+        {"yaw",      _cachedCamera.yaw},
+    };
+
+    auto& scenes = j["scenes"] = nlohmann::json::array();
+    for (auto& [key, scene] : loadedScenes) {
+        std::string filename = key.substr(0, key.find('#'));
+        const float* m = glm::value_ptr(scene->worldTransform);
+        nlohmann::json entry;
+        entry["key"]       = key;
+        entry["file"]      = "../assets/" + filename;
+        entry["transform"] = std::vector<float>(m, m + 16);
+        scenes.push_back(std::move(entry));
+    }
+
     std::ofstream f(path);
     if (!f) {
         FE_CORE_ERROR("saveSceneFile: cannot open '{}'", path);
         return;
     }
-
-    f << "ATRS_SCENE 1\n";
-    f << "SPAWN_COUNTER " << _spawnCounter << "\n";
-    f << std::fixed << std::setprecision(6);
-    f << "CAMERA_POS " << _cachedCamera.position.x
-      << " " << _cachedCamera.position.y
-      << " " << _cachedCamera.position.z << "\n";
-    f << "CAMERA_PITCH " << _cachedCamera.pitch << "\n";
-    f << "CAMERA_YAW "   << _cachedCamera.yaw   << "\n";
-
-    for (auto& [key, scene] : loadedScenes) {
-        std::string filename = key.substr(0, key.find('#'));
-        std::string filePath = "../assets/" + filename;
-        f << "SCENE " << key << " " << filePath << "\n";
-        const float* m = glm::value_ptr(scene->worldTransform);
-        f << "TRANSFORM";
-        for (int i = 0; i < 16; ++i) f << " " << m[i];
-        f << "\n";
-    }
-
+    f << j.dump(2);
     FE_CORE_INFO("Scene saved to '{}'", path);
 }
 
@@ -863,11 +864,16 @@ bool VkRender::loadSceneFile(const std::string& path) {
         return false;
     }
 
-    std::string header;
-    int version = 0;
-    f >> header >> version;
-    if (header != "ATRS_SCENE" || version != 1) {
-        FE_CORE_ERROR("loadSceneFile: invalid file format in '{}'", path);
+    nlohmann::json j;
+    try {
+        f >> j;
+    } catch (const nlohmann::json::exception& e) {
+        FE_CORE_ERROR("loadSceneFile: parse error in '{}': {}", path, e.what());
+        return false;
+    }
+
+    if (j.value("version", 0) != 1) {
+        FE_CORE_ERROR("loadSceneFile: unsupported version in '{}'", path);
         return false;
     }
 
@@ -876,36 +882,33 @@ bool VkRender::loadSceneFile(const std::string& path) {
     drawCommands.TransparentSurfaces.clear();
     _selectedScene.clear();
 
+    _spawnCounter = j.value("spawnCounter", 0);
+
     glm::vec3 camPos {};
     float camPitch = 0.f, camYaw = 0.f;
+    if (j.contains("camera")) {
+        auto& cam   = j["camera"];
+        auto& pos   = cam["position"];
+        camPos      = { pos[0], pos[1], pos[2] };
+        camPitch    = cam.value("pitch", 0.f);
+        camYaw      = cam.value("yaw",   0.f);
+    }
 
-    std::string token;
-    while (f >> token) {
-        if (token == "SPAWN_COUNTER") {
-            f >> _spawnCounter;
-        } else if (token == "CAMERA_POS") {
-            f >> camPos.x >> camPos.y >> camPos.z;
-        } else if (token == "CAMERA_PITCH") {
-            f >> camPitch;
-        } else if (token == "CAMERA_YAW") {
-            f >> camYaw;
-        } else if (token == "SCENE") {
-            std::string key, filePath;
-            f >> key >> filePath;
+    for (auto& entry : j.value("scenes", nlohmann::json::array())) {
+        std::string key      = entry.value("key",  "");
+        std::string filePath = entry.value("file", "");
+        auto& t = entry["transform"];
 
-            std::string transformToken;
-            f >> transformToken;
-            glm::mat4 transform;
-            float* m = glm::value_ptr(transform);
-            for (int i = 0; i < 16; ++i) f >> m[i];
+        glm::mat4 transform;
+        float* m = glm::value_ptr(transform);
+        for (int i = 0; i < 16; ++i) m[i] = t[i].get<float>();
 
-            auto result = loadGltf(this, filePath);
-            if (result.has_value()) {
-                setSceneTransform(**result, transform);
-                loadedScenes[key] = *result;
-            } else {
-                FE_CORE_WARN("loadSceneFile: failed to load '{}'", filePath);
-            }
+        auto result = loadGltf(this, filePath);
+        if (result.has_value()) {
+            setSceneTransform(**result, transform);
+            loadedScenes[key] = *result;
+        } else {
+            FE_CORE_WARN("loadSceneFile: failed to load '{}'", filePath);
         }
     }
 
@@ -1088,7 +1091,7 @@ void VkRender::draw_imgui_panels() {
 
         ImGui::SeparatorText("Scene File");
         {
-            static char scenePath[256] = "scene.atrs";
+            static char scenePath[256] = "scene.scene";
             static char sceneFileStatus[128] = "";
 
             ImGui::InputText("Path##sceneFile", scenePath, sizeof(scenePath));

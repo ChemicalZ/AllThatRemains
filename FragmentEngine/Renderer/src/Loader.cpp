@@ -408,6 +408,13 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::str
     return scene;
 }
 
+// ─── Scene placement ──────────────────────────────────────────────────────
+
+void setSceneTransform(LoadedGLTF& scene, const glm::mat4& transform)
+{
+    scene.worldTransform = transform;
+}
+
 // ─── LoadedGLTF ───────────────────────────────────────────────────────────
 
 void LoadedGLTF::Draw(const glm::mat4& topMatrix, DrawContext& ctx)
@@ -421,6 +428,9 @@ void LoadedGLTF::clearAll()
 {
     VkDevice dv = creator->_device;
 
+    FE_CORE_TRACE("LoadedGLTF::clearAll — meshes={} images={} samplers={} materials={}",
+        meshes.size(), images.size(), samplers.size(), materials.size());
+
     // 1. Evict from TextureCache while shared_ptrs (and their imageViews) are
     //    still alive. Non-owning error-checkerboard entries are skipped.
     const VkDescriptorImageInfo fallback {
@@ -428,46 +438,46 @@ void LoadedGLTF::clearAll()
         .imageView   = creator->_errorCheckerboardImage.imageView,
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
     };
-    // Evict by image — only when this scene is the last holder. If use_count > 1
-    // another scene shares the image (via ResourceManager) and its material
-    // TextureIDs still index that slot; evicting would corrupt the survivor.
     for (auto& [k, sp] : images) {
         if (!sp || sp.get() == &creator->_errorCheckerboardImage) continue;
         if (sp.use_count() == 1) {
+            FE_CORE_TRACE("  evict texture by view={} (use_count==1)", (void*)sp->imageView);
             creator->texCache.FreeTexturesWithView(sp->imageView, fallback);
         }
     }
-
-    // Evict by sampler — always. GLTF samplers are created per-loadGltf call and
-    // are never shared across scenes. Any cache entry referencing one of our
-    // samplers must be removed before the sampler handle is destroyed, regardless
-    // of whether the paired image is still alive in another scene.
     for (auto& sampler : samplers) {
+        FE_CORE_TRACE("  evict texture by sampler={}", (void*)sampler);
         creator->texCache.FreeTexturesWithSampler(sampler, fallback);
     }
 
-    // 2. Drain GPU — clearAll() runs mid-frame while the previous frame's
-    //    GPU submission may still be in flight. Must finish before destroying
-    //    any Vulkan resources.
+    // 2. Drain GPU.
+    FE_CORE_TRACE("  vkDeviceWaitIdle");
     vkDeviceWaitIdle(dv);
 
     // 3. Destroy mesh buffers (not ResourceManager-managed).
     for (auto& [k, v] : meshes) {
+        FE_CORE_TRACE("  destroy mesh '{}' idx={} vtx={}",
+            k, (void*)v->meshBuffers.indexBuffer.buffer,
+            (void*)v->meshBuffers.vertexBuffer.buffer);
         creator->destroy_buffer(v->meshBuffers.indexBuffer);
         creator->destroy_buffer(v->meshBuffers.vertexBuffer);
     }
 
-    // 4. Release image shared_ptrs. If this is the last reference, the custom
-    //    deleter calls destroy_image — safe because GPU is idle from step 2.
-    //    Non-owning error-checkerboard ptrs have a no-op deleter.
+    // 4. Release image shared_ptrs — custom deleters call destroy_image if last ref.
+    FE_CORE_TRACE("  images.clear() ({} entries)", images.size());
     images.clear();
 
     // 5. Samplers, descriptor pool, material constants buffer.
     for (auto& sampler : samplers) {
+        FE_CORE_TRACE("  vkDestroySampler={}", (void*)sampler);
         vkDestroySampler(dv, sampler, nullptr);
     }
+    FE_CORE_TRACE("  destroy_pools + materialDataBuffer={}",
+        (void*)materialDataBuffer.buffer);
     descriptorPool.destroy_pools(dv);
     creator->destroy_buffer(materialDataBuffer);
+
+    FE_CORE_TRACE("LoadedGLTF::clearAll — done");
 }
 
 } // namespace fe

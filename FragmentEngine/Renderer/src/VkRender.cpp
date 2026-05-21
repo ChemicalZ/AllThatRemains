@@ -98,8 +98,10 @@ VkRender::VkRender(SDL_Window* window) {
 
 VkRender::~VkRender() {
     if (_isInitialized) {
+        FE_CORE_TRACE("~VkRender: waiting for GPU idle");
         vkDeviceWaitIdle(_device);
 
+        FE_CORE_TRACE("~VkRender: flushing per-frame deletion queues");
         for (auto & _frame : _frames) {
             _frame._deletionQueue.flush();
         }
@@ -107,10 +109,14 @@ VkRender::~VkRender() {
         // Destroy all loaded scenes before the VMA allocator is torn down.
         // ~LoadedGLTF() calls clearAll() which frees GPU buffers/images via VMA.
         // _mainDeletionQueue.flush() destroys the allocator, so this must come first.
+        FE_CORE_TRACE("~VkRender: clearing {} loaded scene(s)", loadedScenes.size());
         loadedScenes.clear();
 
+        FE_CORE_TRACE("~VkRender: flushing main deletion queue ({} entries)",
+            _mainDeletionQueue.deletors.size());
         _mainDeletionQueue.flush();
 
+        FE_CORE_TRACE("~VkRender: destroying swapchain");
         destroy_swapchain();
 
         vkDestroySurfaceKHR(_instance, _surface, nullptr);
@@ -226,7 +232,7 @@ void VkRender::UpdateScene(const Camera& cam) {
     sceneData.sunlightColor     = glm::vec4(1.0f);
 
     for (auto& scene : loadedScenes | std::views::values) {
-        scene->Draw(glm::mat4{1.f}, drawCommands);
+        scene->Draw(scene->worldTransform, drawCommands);
     }
 }
 
@@ -721,11 +727,17 @@ GPUMeshBuffers VkRender::uploadMesh(std::span<uint32_t> indices, std::span<Verte
 }
 
 void VkRender::destroy_image(const AllocatedImage& img) {
+    if (img.image == VK_NULL_HANDLE) return;
+    FE_CORE_TRACE("destroy_image  view={} image={} alloc={}",
+        (void*)img.imageView, (void*)img.image, (void*)img.allocation);
     vkDestroyImageView(_device, img.imageView, nullptr);
     vmaDestroyImage(_allocator, img.image, img.allocation);
 }
 
 void VkRender::destroy_buffer(const AllocatedBuffer& buffer) {
+    if (buffer.buffer == VK_NULL_HANDLE) return;
+    FE_CORE_TRACE("destroy_buffer buf={} alloc={}",
+        (void*)buffer.buffer, (void*)buffer.allocation);
     vmaDestroyBuffer(_allocator, buffer.buffer, buffer.allocation);
 }
 
@@ -899,16 +911,35 @@ void VkRender::draw_imgui_panels() {
                 "structure.glb",
                 "structure_mat.glb",
             };
-            static int selectedAsset = 0;
-            static int spawnCounter  = 0;
-            static char statusMsg[64] = "";
+            static int   selectedAsset  = 0;
+            static int   spawnCounter   = 0;
+            static float spawnDistance  = 5.f;
+            static char  statusMsg[64]  = "";
 
             ImGui::Combo("Asset", &selectedAsset, kAssets, IM_ARRAYSIZE(kAssets));
+            ImGui::SliderFloat("Spawn Distance", &spawnDistance, 0.5f, 100.f, "%.1f");
+
             if (ImGui::Button("Add to Scene")) {
-                std::string key = std::string(kAssets[selectedAsset]) + "#" + std::to_string(++spawnCounter);
+                std::string key  = std::string(kAssets[selectedAsset]) + "#" + std::to_string(++spawnCounter);
                 std::string path = std::string("../assets/") + kAssets[selectedAsset];
                 auto result = loadGltf(this, path);
                 if (result.has_value()) {
+                    // Camera forward from cached pitch/yaw
+                    const float cp      = std::cos(_cachedCamera.pitch);
+                    const float sp      = std::sin(_cachedCamera.pitch);
+                    const float cy      = std::cos(_cachedCamera.yaw);
+                    const float sy      = std::sin(_cachedCamera.yaw);
+                    const glm::vec3 fwd { cp * sy, sp, -cp * cy };
+
+                    // Place object in front of camera, rotated to face back toward it.
+                    // Object yaw = camera yaw + π (same -Y axis convention as Camera).
+                    const glm::vec3 spawnPos   = _cachedCamera.position + fwd * spawnDistance;
+                    const float     spawnYaw   = _cachedCamera.yaw + glm::pi<float>();
+                    const glm::mat4 spawnXform =
+                        glm::translate(glm::mat4(1.f), spawnPos) *
+                        glm::rotate(glm::mat4(1.f), spawnYaw, glm::vec3{0.f, -1.f, 0.f});
+
+                    setSceneTransform(**result, spawnXform);
                     loadedScenes[key] = *result;
                     snprintf(statusMsg, sizeof(statusMsg), "Added %s", key.c_str());
                 } else {
@@ -920,6 +951,42 @@ void VkRender::draw_imgui_panels() {
                 ImGui::TextDisabled("%s", statusMsg);
             }
         }
+    }
+    ImGui::End();
+
+    // ── Logging ──────────────────────────────────────────────────────────────
+    if (ImGui::Begin("Logging")) {
+        static constexpr const char* kLevelNames[] = {
+            "Trace", "Debug", "Info", "Warn", "Error", "Critical", "Off"
+        };
+        static constexpr spdlog::level::level_enum kLevels[] = {
+            spdlog::level::trace,
+            spdlog::level::debug,
+            spdlog::level::info,
+            spdlog::level::warn,
+            spdlog::level::err,
+            spdlog::level::critical,
+            spdlog::level::off,
+        };
+        static_assert(IM_ARRAYSIZE(kLevelNames) == IM_ARRAYSIZE(kLevels));
+
+        auto logger = fe::LogInternal::GetCoreLogger();
+
+        // Find the index matching the logger's current level
+        int current = 2; // default Info
+        for (int i = 0; i < IM_ARRAYSIZE(kLevels); ++i) {
+            if (logger->level() == kLevels[i]) { current = i; break; }
+        }
+
+        if (ImGui::Combo("Level", &current, kLevelNames, IM_ARRAYSIZE(kLevelNames))) {
+            logger->set_level(kLevels[current]);
+            FE_CORE_INFO("Log level changed to {}", kLevelNames[current]);
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Trace/Debug: resource lifecycle, cache ops");
+        ImGui::TextDisabled("Info:  normal engine events (default)");
+        ImGui::TextDisabled("Warn+: errors and critical failures only");
     }
     ImGui::End();
 }
@@ -957,13 +1024,25 @@ void VkRender::create_oit_images(VkExtent3D extent) {
     // Mark both as UNDEFINED so first transition knows the true initial layout
     _imageStates.reset(_oitAccumImage.image);
     _imageStates.reset(_oitRevealImage.image);
+
+    FE_CORE_TRACE("create_oit_images {}x{} — accum={} reveal={}",
+        extent.width, extent.height,
+        (void*)_oitAccumImage.image, (void*)_oitRevealImage.image);
 }
 
 void VkRender::destroy_oit_images() {
-    vkDestroyImageView(_device, _oitAccumImage.imageView, nullptr);
-    vmaDestroyImage(_allocator, _oitAccumImage.image, _oitAccumImage.allocation);
-    vkDestroyImageView(_device, _oitRevealImage.imageView, nullptr);
-    vmaDestroyImage(_allocator, _oitRevealImage.image, _oitRevealImage.allocation);
+    FE_CORE_TRACE("destroy_oit_images — accum={} reveal={}",
+        (void*)_oitAccumImage.image, (void*)_oitRevealImage.image);
+    if (_oitAccumImage.image != VK_NULL_HANDLE) {
+        vkDestroyImageView(_device, _oitAccumImage.imageView, nullptr);
+        vmaDestroyImage(_allocator, _oitAccumImage.image, _oitAccumImage.allocation);
+        _oitAccumImage = {};
+    }
+    if (_oitRevealImage.image != VK_NULL_HANDLE) {
+        vkDestroyImageView(_device, _oitRevealImage.imageView, nullptr);
+        vmaDestroyImage(_allocator, _oitRevealImage.image, _oitRevealImage.allocation);
+        _oitRevealImage = {};
+    }
 }
 
 void VkRender::init_oit_pipelines() {
@@ -1456,6 +1535,7 @@ void VkRender::init_renderables() {
 // ─── Swapchain management ──────────────────────────────────────────────────
 
 void VkRender::create_swapchain(uint32_t width, uint32_t height) {
+    FE_CORE_TRACE("create_swapchain {}x{}", width, height);
     vkb::SwapchainBuilder swapchainBuilder { _chosenGPU, _device, _surface };
 
     _swapchainImageFormat = VK_FORMAT_B8G8R8A8_UNORM;
@@ -1488,6 +1568,7 @@ void VkRender::create_swapchain(uint32_t width, uint32_t height) {
 }
 
 void VkRender::destroy_swapchain() {
+    FE_CORE_TRACE("destroy_swapchain images={}", _swapchainImages.size());
     for (auto& sem : _imageAcquireSemaphores) {
         vkDestroySemaphore(_device, sem, nullptr);
     }
@@ -1510,6 +1591,8 @@ void VkRender::destroy_swapchain() {
 }
 
 void VkRender::resize_swapchain() {
+    FE_CORE_TRACE("resize_swapchain begin — current {}x{}",
+        _windowExtent.width, _windowExtent.height);
     vkDeviceWaitIdle(_device);
     destroy_swapchain();
 
@@ -1663,6 +1746,8 @@ void MeshNode::Draw(const glm::mat4& topMatrix, DrawContext& ctx) {
 TextureID TextureCache::AddTexture(const VkImageView& image, VkSampler sampler) {
     for (uint32_t i = 0; i < static_cast<uint32_t>(Cache.size()); i++) {
         if (Cache[i].imageView == image && Cache[i].sampler == sampler) {
+            FE_CORE_TRACE("TextureCache::AddTexture hit  slot={} view={} sampler={}",
+                i, (void*)image, (void*)sampler);
             return TextureID{i};
         }
     }
@@ -1677,17 +1762,22 @@ TextureID TextureCache::AddTexture(const VkImageView& image, VkSampler sampler) 
         const uint32_t idx = _freeSlots.back();
         _freeSlots.pop_back();
         Cache[idx] = entry;
+        FE_CORE_TRACE("TextureCache::AddTexture reuse slot={} view={} sampler={} freeSlots={}",
+            idx, (void*)image, (void*)sampler, _freeSlots.size());
         return TextureID{idx};
     }
 
     const auto idx = static_cast<uint32_t>(Cache.size());
     Cache.push_back(entry);
+    FE_CORE_TRACE("TextureCache::AddTexture new   slot={} view={} sampler={} cacheSize={}",
+        idx, (void*)image, (void*)sampler, Cache.size());
     return TextureID{idx};
 }
 
 void TextureCache::FreeTexturesWithView(VkImageView view, VkDescriptorImageInfo fallback) {
     for (uint32_t i = 0; i < static_cast<uint32_t>(Cache.size()); i++) {
         if (Cache[i].imageView == view) {
+            FE_CORE_TRACE("TextureCache::FreeTexturesWithView slot={} view={}", i, (void*)view);
             Cache[i] = fallback;
             _freeSlots.push_back(i);
         }
@@ -1697,6 +1787,7 @@ void TextureCache::FreeTexturesWithView(VkImageView view, VkDescriptorImageInfo 
 void TextureCache::FreeTexturesWithSampler(VkSampler sampler, VkDescriptorImageInfo fallback) {
     for (uint32_t i = 0; i < static_cast<uint32_t>(Cache.size()); i++) {
         if (Cache[i].sampler == sampler) {
+            FE_CORE_TRACE("TextureCache::FreeTexturesWithSampler slot={} sampler={}", i, (void*)sampler);
             Cache[i] = fallback;
             _freeSlots.push_back(i);
         }

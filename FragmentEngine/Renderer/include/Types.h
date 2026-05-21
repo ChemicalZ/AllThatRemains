@@ -40,17 +40,17 @@ do {                                                   \
 namespace fe {
 
 struct AllocatedImage {
-    VkImage image;
-    VkImageView imageView;
-    VmaAllocation allocation;
-    VkExtent3D imageExtent;
-    VkFormat imageFormat;
+    VkImage       image       { VK_NULL_HANDLE };
+    VkImageView   imageView   { VK_NULL_HANDLE };
+    VmaAllocation allocation  { VK_NULL_HANDLE };
+    VkExtent3D    imageExtent {};
+    VkFormat      imageFormat {};
 };
 
 struct AllocatedBuffer {
-    VkBuffer buffer;
-    VmaAllocation allocation;
-    VmaAllocationInfo info;
+    VkBuffer          buffer     { VK_NULL_HANDLE };
+    VmaAllocation     allocation { VK_NULL_HANDLE };
+    VmaAllocationInfo info       {};
 };
 
 struct GPUSceneData {

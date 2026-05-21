@@ -45,6 +45,8 @@ struct LoadedGLTF : public IRenderable {
     DescriptorAllocatorGrowable descriptorPool;
     AllocatedBuffer materialDataBuffer;
 
+    glm::mat4 worldTransform { glm::mat4(1.f) };
+
     VkRender* creator;
 
     ~LoadedGLTF() { clearAll(); }
@@ -56,5 +58,9 @@ private:
 };
 
 std::optional<std::shared_ptr<LoadedGLTF>> loadGltf(VkRender* renderer, std::string_view filePath);
+
+// Sets the scene's world-space transform (position, orientation, scale).
+// Call after loadGltf to place the scene in the world.
+void setSceneTransform(LoadedGLTF& scene, const glm::mat4& transform);
 
 } // namespace fe

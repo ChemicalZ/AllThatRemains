@@ -17,6 +17,7 @@ target_compile_definitions(FragmentRenderer PUBLIC
         SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE
         IMGUI_IMPL_VULKAN_USE_VOLK
         GLM_FORCE_DEPTH_ZERO_TO_ONE
+        FRAGMENT_HAS_IMGUIZMO
 )
 
 target_link_libraries(FragmentRenderer PUBLIC
@@ -30,6 +31,7 @@ target_link_libraries(FragmentRenderer PUBLIC
         imgui::imgui
         fastgltf::fastgltf
         SDL3_image::SDL3_image
+        imguizmo::imguizmo
 )
 
 # ------------------------------------------------------------
@@ -69,3 +71,4 @@ target_sources(FragmentRenderer PRIVATE
 target_include_directories(FragmentRenderer PRIVATE
         "${IMGUI_BACKENDS_DIR}"
 )
+

@@ -198,6 +198,9 @@ namespace fe {
 
         DrawContext drawCommands;
         std::unordered_map<std::string, std::shared_ptr<LoadedGLTF>> loadedScenes;
+        std::string _selectedScene;
+        int _gizmoOperation { 7 };  // ImGuizmo::TRANSLATE
+        int _gizmoMode      { 1 };  // ImGuizmo::WORLD
 
         VkDevice _device;
 

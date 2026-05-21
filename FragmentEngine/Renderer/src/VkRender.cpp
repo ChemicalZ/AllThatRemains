@@ -11,6 +11,9 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
+#ifdef FRAGMENT_HAS_IMGUIZMO
+#include "ImGuizmo.h"
+#endif
 
 
 // VMA is used with Volk/VK_NO_PROTOTYPES. In newer VMA versions, dynamic
@@ -24,6 +27,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/packing.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>
 
@@ -161,6 +165,9 @@ void VkRender::Draw() {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+#ifdef FRAGMENT_HAS_IMGUIZMO
+    ImGuizmo::BeginFrame();
+#endif
     draw_imgui_panels();
     ImGui::Render();
 
@@ -881,11 +888,16 @@ void VkRender::draw_imgui_panels() {
             std::string toRemove;
             if (loadedScenes.empty()) {
                 ImGui::TextDisabled("(none)");
+                _selectedScene.clear();
             } else {
                 for (auto& [name, scene] : loadedScenes) {
-                    ImGui::Text("%s", name.c_str());
-                    ImGui::SameLine();
                     ImGui::PushID(name.c_str());
+                    bool selected = (_selectedScene == name);
+                    if (ImGui::Selectable(name.c_str(), selected,
+                            ImGuiSelectableFlags_AllowOverlap)) {
+                        _selectedScene = name;
+                    }
+                    ImGui::SameLine();
                     if (ImGui::SmallButton("-")) {
                         toRemove = name;
                     }
@@ -893,11 +905,39 @@ void VkRender::draw_imgui_panels() {
                 }
             }
             if (!toRemove.empty()) {
+                if (_selectedScene == toRemove) _selectedScene.clear();
                 loadedScenes.erase(toRemove);
                 drawCommands.OpaqueSurfaces.clear();
                 drawCommands.TransparentSurfaces.clear();
             }
         }
+
+#ifdef FRAGMENT_HAS_IMGUIZMO
+        ImGui::SeparatorText("Gizmo");
+        {
+            auto opBtn = [&](const char* label, int op) {
+                bool active = (_gizmoOperation == op);
+                if (active) ImGui::PushStyleColor(ImGuiCol_Button,
+                    ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if (ImGui::Button(label)) _gizmoOperation = op;
+                if (active) ImGui::PopStyleColor();
+                ImGui::SameLine();
+            };
+            opBtn("T##gizmo", ImGuizmo::TRANSLATE);
+            opBtn("R##gizmo", ImGuizmo::ROTATE);
+            opBtn("S##gizmo", ImGuizmo::SCALE);
+            ImGui::NewLine();
+
+            bool isWorld = (_gizmoMode == ImGuizmo::WORLD);
+            if (ImGui::Checkbox("World space", &isWorld))
+                _gizmoMode = isWorld ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+
+            if (!_selectedScene.empty())
+                ImGui::TextDisabled("Editing: %s", _selectedScene.c_str());
+            else
+                ImGui::TextDisabled("Click a scene name to select");
+        }
+#endif
 
         ImGui::SeparatorText("Add Object");
         {
@@ -953,6 +993,42 @@ void VkRender::draw_imgui_panels() {
         }
     }
     ImGui::End();
+
+    // ── Gizmo overlay ─────────────────────────────────────────────────────────
+#ifdef FRAGMENT_HAS_IMGUIZMO
+    if (!_selectedScene.empty()) {
+        auto it = loadedScenes.find(_selectedScene);
+        if (it != loadedScenes.end()) {
+            LoadedGLTF& scene = *it->second;
+
+            // ImGuizmo needs a standard (non-Vulkan-flipped) projection matrix.
+            // Our sceneData.proj has [1][1]*=-1 for Vulkan's Y-down clip space;
+            // ImGuizmo does its own Y inversion internally, so pass clean perspective.
+            const float aspect = static_cast<float>(_windowExtent.width) /
+                                 static_cast<float>(_windowExtent.height);
+            glm::mat4 guiProj = glm::perspective(glm::radians(70.f), aspect, 0.1f, 10000.f);
+
+            ImGuizmo::SetOrthographic(false);
+            ImGuizmo::SetRect(0.f, 0.f,
+                static_cast<float>(_windowExtent.width),
+                static_cast<float>(_windowExtent.height));
+
+            glm::mat4 worldTransform = scene.worldTransform;
+            ImGuizmo::Manipulate(
+                glm::value_ptr(sceneData.view),
+                glm::value_ptr(guiProj),
+                static_cast<ImGuizmo::OPERATION>(_gizmoOperation),
+                static_cast<ImGuizmo::MODE>(_gizmoMode),
+                glm::value_ptr(worldTransform));
+
+            if (ImGuizmo::IsUsing()) {
+                scene.worldTransform = worldTransform;
+            }
+        } else {
+            _selectedScene.clear(); // scene was removed
+        }
+    }
+#endif
 
     // ── Logging ──────────────────────────────────────────────────────────────
     if (ImGui::Begin("Logging")) {

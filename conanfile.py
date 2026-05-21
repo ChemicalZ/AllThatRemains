@@ -17,10 +17,9 @@ class MyProjectConan(ConanFile):
         self.requires("glm/1.0.1")
         self.requires("fmt/12.1.0")
         self.requires("vk-bootstrap/1.3.296")
-        self.requires("imgui/1.92.8-docking")
+        self.requires("imgui/1.92.8-docking", override=True)
         self.requires("fastgltf/0.9.0")
         self.requires("sdl_image/3.4.0")
-
 
     def configure(self):
         self.options["sdl"].shared = True
@@ -28,6 +27,7 @@ class MyProjectConan(ConanFile):
         self.options["sdl_image"].with_libtiff = False
         self.options["sdl_image"].with_avif = False
         self.options["imgui"].with_sdl3_binding = True
+        self.options["imguizmo"].shared = True
     def build_requirements(self):
         self.tool_requires("cmake/[>=3.25]")
 

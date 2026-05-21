@@ -18,6 +18,7 @@ namespace fe {
         case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
             return VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+        case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
             return VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
         case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
             return VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
@@ -50,6 +51,8 @@ namespace fe {
             return isSrc
                 ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
                 : (VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
+            return VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
         default:
             return VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
         }
@@ -68,7 +71,9 @@ namespace fe {
         imageBarrier.oldLayout = currentLayout;
         imageBarrier.newLayout = newLayout;
 
-        VkImageAspectFlags aspectMask = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        const bool isDepth = (newLayout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL ||
+                               newLayout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+        VkImageAspectFlags aspectMask = isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         imageBarrier.subresourceRange = image_subresource_range(aspectMask);
         imageBarrier.image = image;
 

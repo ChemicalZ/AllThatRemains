@@ -14,6 +14,8 @@ namespace fe {
         _depthStencil = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         _renderInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
         _shaderStages.clear();
+        _colorBlendAttachments.clear();
+        _colorAttachmentFormats.clear();
     }
 
     VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
@@ -23,14 +25,28 @@ namespace fe {
         viewportState.viewportCount = 1;
         viewportState.scissorCount = 1;
 
+        // Multi-attachment path takes priority over single-attachment
+        const bool multiAttachment = !_colorBlendAttachments.empty();
+
         VkPipelineColorBlendStateCreateInfo colorBlending = {};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         colorBlending.logicOpEnable = VK_FALSE;
         colorBlending.logicOp = VK_LOGIC_OP_COPY;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &_colorBlendAttachment;
+        if (multiAttachment) {
+            colorBlending.attachmentCount = static_cast<uint32_t>(_colorBlendAttachments.size());
+            colorBlending.pAttachments    = _colorBlendAttachments.data();
+        } else {
+            colorBlending.attachmentCount = 1;
+            colorBlending.pAttachments    = &_colorBlendAttachment;
+        }
 
         VkPipelineVertexInputStateCreateInfo vertexInputInfo = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
+        // Patch rendering info for multi-attachment path
+        if (multiAttachment) {
+            _renderInfo.colorAttachmentCount    = static_cast<uint32_t>(_colorAttachmentFormats.size());
+            _renderInfo.pColorAttachmentFormats = _colorAttachmentFormats.data();
+        }
 
         VkGraphicsPipelineCreateInfo pipelineInfo = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         pipelineInfo.pNext = &_renderInfo;
@@ -126,6 +142,15 @@ namespace fe {
         _colorAttachmentformat = format;
         _renderInfo.colorAttachmentCount = 1;
         _renderInfo.pColorAttachmentFormats = &_colorAttachmentformat;
+    }
+
+    void PipelineBuilder::set_color_attachments(
+        const std::vector<VkFormat>& formats,
+        const std::vector<VkPipelineColorBlendAttachmentState>& blendStates)
+    {
+        _colorAttachmentFormats  = formats;
+        _colorBlendAttachments   = blendStates;
+        // _renderInfo patched in build_pipeline when multiAttachment is true
     }
 
     void PipelineBuilder::set_depth_format(VkFormat format)

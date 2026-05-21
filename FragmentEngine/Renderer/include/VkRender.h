@@ -9,6 +9,24 @@
 #include <unordered_map>
 #include <chrono>
 
+namespace fe {
+
+// Tracks current image layout to eliminate manual old-layout bookkeeping.
+struct ImageStateTracker {
+    void reset(VkImage img, VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED) {
+        _states[img] = layout;
+    }
+    VkImageLayout get(VkImage img) const {
+        auto it = _states.find(img);
+        return it != _states.end() ? it->second : VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    void set(VkImage img, VkImageLayout layout) { _states[img] = layout; }
+private:
+    std::unordered_map<VkImage, VkImageLayout> _states;
+};
+
+} // namespace fe
+
 struct SDL_Window;
 union SDL_Event;
 
@@ -187,6 +205,10 @@ namespace fe {
         AllocatedImage _drawImage;
         AllocatedImage _depthImage;
 
+        // OIT accumulation and revealage images
+        AllocatedImage _oitAccumImage;
+        AllocatedImage _oitRevealImage;
+
     private:
         SDL_Window *_window;
         DeletionQueue _mainDeletionQueue;
@@ -271,7 +293,22 @@ namespace fe {
 
         void draw_background(VkCommandBuffer cmd);
         void draw_main(VkCommandBuffer cmd);
-        void draw_geometry(VkCommandBuffer cmd);
+        void draw_opaque_geometry(VkCommandBuffer cmd, VkDescriptorSet globalDescriptor);
+        void draw_oit_transparent(VkCommandBuffer cmd, VkDescriptorSet globalDescriptor);
+        void draw_oit_composite(VkCommandBuffer cmd);
+
+        // OIT pipelines
+        VkPipeline            _oitTransparentPipeline        { VK_NULL_HANDLE };
+        VkPipeline            _oitCompositePipeline          { VK_NULL_HANDLE };
+        VkPipelineLayout      _oitCompositePipelineLayout    { VK_NULL_HANDLE };
+        VkDescriptorSetLayout _oitCompositeDescriptorLayout  { VK_NULL_HANDLE };
+
+        // Per-frame image layout tracker
+        ImageStateTracker _imageStates;
+
+        void init_oit_pipelines();
+        void create_oit_images(VkExtent3D extent);
+        void destroy_oit_images();
 
         // ImGui
         VkDescriptorPool _imguiPool;

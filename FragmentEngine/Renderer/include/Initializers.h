@@ -31,6 +31,10 @@ namespace fe {
                                                     VkImageLayout layout
                                                     /*= VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL*/);
 
+    // Read-only depth: no clear, no store needed for depth write
+    VkRenderingAttachmentInfo depth_attachment_info_readonly(VkImageView view,
+                                                             VkImageLayout layout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+
     VkRenderingInfo rendering_info(VkExtent2D renderExtent, VkRenderingAttachmentInfo *colorAttachment,
                                    VkRenderingAttachmentInfo *depthAttachment);
 

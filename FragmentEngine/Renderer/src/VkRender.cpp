@@ -130,6 +130,10 @@ void VkRender::Draw() {
     get_current_frame()._deletionQueue.flush();
     get_current_frame()._frameDescriptors.clear_pools(_device);
 
+    // OIT images are cleared by the OIT pass each frame; treat them as UNDEFINED each frame
+    _imageStates.reset(_oitAccumImage.image);
+    _imageStates.reset(_oitRevealImage.image);
+
     // Signal the pending acquire semaphore; after getting the image index,
     // swap it into the per-image slot so the swapchain's hold on the old
     // semaphore is released (we just re-acquired that image).
@@ -241,120 +245,235 @@ void VkRender::draw_background(VkCommandBuffer cmd) {
 }
 
 void VkRender::draw_main(VkCommandBuffer cmd) {
+    auto start = std::chrono::system_clock::now();
+
     draw_background(cmd);
 
-    VkRenderingAttachmentInfo colorAttachment = attachment_info(_drawImage.imageView, nullptr, VK_IMAGE_LAYOUT_GENERAL);
-    VkRenderingAttachmentInfo depthAttachment = depth_attachment_info(_depthImage.imageView, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-    VkRenderingInfo renderInfo = rendering_info(_drawExtent, &colorAttachment, &depthAttachment);
-
-    vkCmdBeginRendering(cmd, &renderInfo);
-
-    auto start = std::chrono::system_clock::now();
-    draw_geometry(cmd);
-    auto end = std::chrono::system_clock::now();
-    stats.mesh_draw_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.f;
-
-    vkCmdEndRendering(cmd);
-}
-
-void VkRender::draw_geometry(VkCommandBuffer cmd) {
-    std::vector<uint32_t> opaque_draws;
-    opaque_draws.reserve(drawCommands.OpaqueSurfaces.size());
-    for (int i = 0; i < static_cast<int>(drawCommands.OpaqueSurfaces.size()); i++) {
-        if (is_visible(drawCommands.OpaqueSurfaces[i], sceneData.viewproj)) {
-            opaque_draws.push_back(i);
-        }
-    }
-
+    // ── Scene data + global descriptor (shared by all mesh passes) ────────────
     AllocatedBuffer& gpuSceneDataBuffer = get_current_frame()._sceneDataBuffer;
+    *static_cast<GPUSceneData*>(gpuSceneDataBuffer.info.pMappedData) = sceneData;
 
-    auto* sceneUniformData = static_cast<GPUSceneData*>(gpuSceneDataBuffer.info.pMappedData);
-    *sceneUniformData = sceneData;
-
-    VkDescriptorSetVariableDescriptorCountAllocateInfo allocArrayInfo {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO};
+    VkDescriptorSetVariableDescriptorCountAllocateInfo allocArrayInfo {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO
+    };
     auto descriptorCounts = static_cast<uint32_t>(texCache.Cache.size());
-    allocArrayInfo.pDescriptorCounts = &descriptorCounts;
+    allocArrayInfo.pDescriptorCounts  = &descriptorCounts;
     allocArrayInfo.descriptorSetCount = 1;
 
-    VkDescriptorSet globalDescriptor = get_current_frame()._frameDescriptors.allocate(_device, _gpuSceneDataDescriptorLayout, &allocArrayInfo);
+    VkDescriptorSet globalDescriptor = get_current_frame()._frameDescriptors.allocate(
+        _device, _gpuSceneDataDescriptorLayout, &allocArrayInfo);
 
-    DescriptorWriter writer;
-    writer.write_buffer(0, gpuSceneDataBuffer.buffer, sizeof(GPUSceneData), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-
+    DescriptorWriter dw;
+    dw.write_buffer(0, gpuSceneDataBuffer.buffer, sizeof(GPUSceneData), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
     if (!texCache.Cache.empty()) {
         VkWriteDescriptorSet arraySet {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        arraySet.descriptorCount  = static_cast<uint32_t>(texCache.Cache.size());
-        arraySet.dstArrayElement  = 0;
-        arraySet.descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        arraySet.dstBinding       = 1;
-        arraySet.pImageInfo       = texCache.Cache.data();
-        writer.writes.push_back(arraySet);
+        arraySet.descriptorCount = static_cast<uint32_t>(texCache.Cache.size());
+        arraySet.dstArrayElement = 0;
+        arraySet.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        arraySet.dstBinding      = 1;
+        arraySet.pImageInfo      = texCache.Cache.data();
+        dw.writes.push_back(arraySet);
     }
-
-    writer.update_set(_device, globalDescriptor);
-
-    MaterialPipeline* lastPipeline = nullptr;
-    MaterialInstance* lastMaterial = nullptr;
-    VkBuffer lastIndexBuffer = VK_NULL_HANDLE;
-
-    auto draw = [&](const RenderObject& r) {
-        if (r.material != lastMaterial) {
-            lastMaterial = r.material;
-            if (r.material->pipeline != lastPipeline) {
-                lastPipeline = r.material->pipeline;
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->pipeline);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->layout, 0, 1, &globalDescriptor, 0, nullptr);
-
-                VkViewport viewport = {};
-                viewport.width    = static_cast<float>(_drawExtent.width);
-                viewport.height   = static_cast<float>(_drawExtent.height);
-                viewport.minDepth = 0.f;
-                viewport.maxDepth = 1.f;
-                vkCmdSetViewport(cmd, 0, 1, &viewport);
-
-                VkRect2D scissor = {};
-                scissor.extent   = _drawExtent;
-                vkCmdSetScissor(cmd, 0, 1, &scissor);
-            }
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->layout, 1, 1, &r.material->materialSet, 0, nullptr);
-        }
-        if (r.indexBuffer != lastIndexBuffer) {
-            lastIndexBuffer = r.indexBuffer;
-            vkCmdBindIndexBuffer(cmd, r.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-        }
-
-        GPUDrawPushConstants push_constants{};
-        push_constants.worldMatrix   = r.transform;
-        push_constants.vertexBuffer  = r.vertexBufferAddress;
-        vkCmdPushConstants(cmd, r.material->pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &push_constants);
-
-        stats.drawcall_count++;
-        stats.triangle_count += r.indexCount / 3;
-        vkCmdDrawIndexed(cmd, r.indexCount, 1, r.firstIndex, 0, 0);
-    };
+    dw.update_set(_device, globalDescriptor);
 
     stats.drawcall_count = 0;
     stats.triangle_count = 0;
 
-    for (auto& r : opaque_draws) {
-        draw(drawCommands.OpaqueSurfaces[r]);
-    }
+    // ── Opaque pass ───────────────────────────────────────────────────────────
+    VkRenderingAttachmentInfo colorAtt  = attachment_info(_drawImage.imageView, nullptr, VK_IMAGE_LAYOUT_GENERAL);
+    VkRenderingAttachmentInfo depthAtt  = depth_attachment_info(_depthImage.imageView, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+    VkRenderingInfo           opaqueRI  = rendering_info(_drawExtent, &colorAtt, &depthAtt);
+    vkCmdBeginRendering(cmd, &opaqueRI);
+    draw_opaque_geometry(cmd, globalDescriptor);
+    vkCmdEndRendering(cmd);
 
-    // Sort transparent surfaces back-to-front (painter's algorithm)
-    const glm::vec3 camPos = _cachedCamera.position;
-    std::sort(drawCommands.TransparentSurfaces.begin(), drawCommands.TransparentSurfaces.end(),
-        [&camPos](const RenderObject& a, const RenderObject& b) {
-            const glm::vec3 wa = glm::vec3(a.transform * glm::vec4(a.bounds.origin, 1.f));
-            const glm::vec3 wb = glm::vec3(b.transform * glm::vec4(b.bounds.origin, 1.f));
-            return glm::dot(wa - camPos, wa - camPos) > glm::dot(wb - camPos, wb - camPos);
-        });
+    // ── OIT transparent pass ──────────────────────────────────────────────────
+    transition_image(cmd, _oitAccumImage.image,
+        _imageStates.get(_oitAccumImage.image), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    _imageStates.set(_oitAccumImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-    for (auto& r : drawCommands.TransparentSurfaces) {
-        draw(r);
-    }
+    transition_image(cmd, _oitRevealImage.image,
+        _imageStates.get(_oitRevealImage.image), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    _imageStates.set(_oitRevealImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    transition_image(cmd, _depthImage.image,
+        VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL);
+
+    draw_oit_transparent(cmd, globalDescriptor);
+
+    // ── OIT composite pass ────────────────────────────────────────────────────
+    transition_image(cmd, _oitAccumImage.image,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    _imageStates.set(_oitAccumImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    transition_image(cmd, _oitRevealImage.image,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    _imageStates.set(_oitRevealImage.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    draw_oit_composite(cmd);
 
     drawCommands.OpaqueSurfaces.clear();
     drawCommands.TransparentSurfaces.clear();
+
+    auto end = std::chrono::system_clock::now();
+    stats.mesh_draw_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.f;
+}
+
+// Opaque draw helper — batches by pipeline/material/index buffer
+static void record_draw_object(
+    VkCommandBuffer cmd, const RenderObject& r,
+    VkDescriptorSet globalDescriptor, VkExtent2D extent,
+    MaterialPipeline*& lastPipeline, MaterialInstance*& lastMaterial, VkBuffer& lastIndexBuffer,
+    EngineStats& stats)
+{
+    if (r.material != lastMaterial) {
+        lastMaterial = r.material;
+        if (r.material->pipeline != lastPipeline) {
+            lastPipeline = r.material->pipeline;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->pipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->layout, 0, 1, &globalDescriptor, 0, nullptr);
+
+            VkViewport viewport {};
+            viewport.width    = static_cast<float>(extent.width);
+            viewport.height   = static_cast<float>(extent.height);
+            viewport.minDepth = 0.f;
+            viewport.maxDepth = 1.f;
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+            VkRect2D scissor {};
+            scissor.extent = extent;
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+        }
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.material->pipeline->layout, 1, 1, &r.material->materialSet, 0, nullptr);
+    }
+    if (r.indexBuffer != lastIndexBuffer) {
+        lastIndexBuffer = r.indexBuffer;
+        vkCmdBindIndexBuffer(cmd, r.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    }
+
+    GPUDrawPushConstants pc {};
+    pc.worldMatrix  = r.transform;
+    pc.vertexBuffer = r.vertexBufferAddress;
+    vkCmdPushConstants(cmd, r.material->pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &pc);
+
+    stats.drawcall_count++;
+    stats.triangle_count += r.indexCount / 3;
+    vkCmdDrawIndexed(cmd, r.indexCount, 1, r.firstIndex, 0, 0);
+}
+
+void VkRender::draw_opaque_geometry(VkCommandBuffer cmd, VkDescriptorSet globalDescriptor) {
+    MaterialPipeline* lastPipeline = nullptr;
+    MaterialInstance* lastMaterial = nullptr;
+    VkBuffer          lastIndex    = VK_NULL_HANDLE;
+
+    for (int i = 0; i < static_cast<int>(drawCommands.OpaqueSurfaces.size()); i++) {
+        const RenderObject& r = drawCommands.OpaqueSurfaces[i];
+        if (is_visible(r, sceneData.viewproj)) {
+            record_draw_object(cmd, r, globalDescriptor, _drawExtent,
+                lastPipeline, lastMaterial, lastIndex, stats);
+        }
+    }
+}
+
+void VkRender::draw_oit_transparent(VkCommandBuffer cmd, VkDescriptorSet globalDescriptor) {
+    VkClearValue accumClear  { .color = {.float32 = {0.f, 0.f, 0.f, 0.f}} };
+    VkClearValue revealClear { .color = {.float32 = {1.f, 0.f, 0.f, 0.f}} };
+
+    VkRenderingAttachmentInfo accumAtt  = attachment_info(_oitAccumImage.imageView,  &accumClear,  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingAttachmentInfo revealAtt = attachment_info(_oitRevealImage.imageView, &revealClear, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    VkRenderingAttachmentInfo depthAtt  = depth_attachment_info_readonly(_depthImage.imageView);
+
+    std::array<VkRenderingAttachmentInfo, 2> colorAtts { accumAtt, revealAtt };
+
+    VkRenderingInfo ri { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO };
+    ri.renderArea             = VkRect2D{ {0,0}, _drawExtent };
+    ri.layerCount             = 1;
+    ri.colorAttachmentCount   = static_cast<uint32_t>(colorAtts.size());
+    ri.pColorAttachments      = colorAtts.data();
+    ri.pDepthAttachment       = &depthAtt;
+
+    vkCmdBeginRendering(cmd, &ri);
+
+    // OIT pipeline is fixed for all transparent surfaces; reuse mesh layout for descriptors
+    VkPipelineLayout oitLayout = metalRoughMaterial.opaquePipeline.layout;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _oitTransparentPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, oitLayout, 0, 1, &globalDescriptor, 0, nullptr);
+
+    VkViewport viewport {};
+    viewport.width    = static_cast<float>(_drawExtent.width);
+    viewport.height   = static_cast<float>(_drawExtent.height);
+    viewport.minDepth = 0.f;
+    viewport.maxDepth = 1.f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor {};
+    scissor.extent = _drawExtent;
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    MaterialInstance* lastMaterial = nullptr;
+    VkBuffer          lastIndex    = VK_NULL_HANDLE;
+
+    for (const RenderObject& r : drawCommands.TransparentSurfaces) {
+        if (r.material != lastMaterial) {
+            lastMaterial = r.material;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, oitLayout, 1, 1, &r.material->materialSet, 0, nullptr);
+        }
+        if (r.indexBuffer != lastIndex) {
+            lastIndex = r.indexBuffer;
+            vkCmdBindIndexBuffer(cmd, r.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        }
+        GPUDrawPushConstants pc {};
+        pc.worldMatrix  = r.transform;
+        pc.vertexBuffer = r.vertexBufferAddress;
+        vkCmdPushConstants(cmd, oitLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &pc);
+        stats.drawcall_count++;
+        stats.triangle_count += r.indexCount / 3;
+        vkCmdDrawIndexed(cmd, r.indexCount, 1, r.firstIndex, 0, 0);
+    }
+
+    vkCmdEndRendering(cmd);
+}
+
+void VkRender::draw_oit_composite(VkCommandBuffer cmd) {
+    // Allocate descriptor for accum + reveal textures
+    VkDescriptorSet oitSet = get_current_frame()._frameDescriptors.allocate(_device, _oitCompositeDescriptorLayout);
+
+    VkDescriptorImageInfo accumInfo {
+        .sampler     = _defaultSamplerNearest,
+        .imageView   = _oitAccumImage.imageView,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+    VkDescriptorImageInfo revealInfo {
+        .sampler     = _defaultSamplerNearest,
+        .imageView   = _oitRevealImage.imageView,
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    };
+
+    DescriptorWriter dw;
+    dw.write_image(0, _oitAccumImage.imageView,  _defaultSamplerNearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    dw.write_image(1, _oitRevealImage.imageView, _defaultSamplerNearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    dw.update_set(_device, oitSet);
+
+    VkRenderingAttachmentInfo colorAtt = attachment_info(_drawImage.imageView, nullptr, VK_IMAGE_LAYOUT_GENERAL);
+    VkRenderingInfo ri = rendering_info(_drawExtent, &colorAtt, nullptr);
+    vkCmdBeginRendering(cmd, &ri);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _oitCompositePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _oitCompositePipelineLayout, 0, 1, &oitSet, 0, nullptr);
+
+    VkViewport viewport {};
+    viewport.width    = static_cast<float>(_drawExtent.width);
+    viewport.height   = static_cast<float>(_drawExtent.height);
+    viewport.minDepth = 0.f;
+    viewport.maxDepth = 1.f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+    VkRect2D scissor {};
+    scissor.extent = _drawExtent;
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vkCmdDraw(cmd, 3, 1, 0, 0); // fullscreen triangle
+
+    vkCmdEndRendering(cmd);
 }
 
 // ─── Immediate submit ──────────────────────────────────────────────────────
@@ -808,6 +927,154 @@ void VkRender::draw_imgui_panels() {
     ImGui::End();
 }
 
+// ─── OIT helpers ──────────────────────────────────────────────────────────
+
+void VkRender::create_oit_images(VkExtent3D extent) {
+    constexpr VkImageUsageFlags oitUsage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    VmaAllocationCreateInfo gpuOnly {};
+    gpuOnly.usage         = VMA_MEMORY_USAGE_GPU_ONLY;
+    gpuOnly.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    // Accumulation (RGBA16F)
+    _oitAccumImage.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    _oitAccumImage.imageExtent = extent;
+    {
+        VkImageCreateInfo info = image_create_info(_oitAccumImage.imageFormat, oitUsage, extent);
+        VK_CHECK(vmaCreateImage(_allocator, &info, &gpuOnly, &_oitAccumImage.image, &_oitAccumImage.allocation, nullptr));
+        VkImageViewCreateInfo view = imageview_create_info(_oitAccumImage.imageFormat, _oitAccumImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+        VK_CHECK(vkCreateImageView(_device, &view, nullptr, &_oitAccumImage.imageView));
+    }
+
+    // Revealage (R16F)
+    _oitRevealImage.imageFormat = VK_FORMAT_R16_SFLOAT;
+    _oitRevealImage.imageExtent = extent;
+    {
+        VkImageCreateInfo info = image_create_info(_oitRevealImage.imageFormat, oitUsage, extent);
+        VK_CHECK(vmaCreateImage(_allocator, &info, &gpuOnly, &_oitRevealImage.image, &_oitRevealImage.allocation, nullptr));
+        VkImageViewCreateInfo view = imageview_create_info(_oitRevealImage.imageFormat, _oitRevealImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+        VK_CHECK(vkCreateImageView(_device, &view, nullptr, &_oitRevealImage.imageView));
+    }
+
+    // Mark both as UNDEFINED so first transition knows the true initial layout
+    _imageStates.reset(_oitAccumImage.image);
+    _imageStates.reset(_oitRevealImage.image);
+}
+
+void VkRender::destroy_oit_images() {
+    vkDestroyImageView(_device, _oitAccumImage.imageView, nullptr);
+    vmaDestroyImage(_allocator, _oitAccumImage.image, _oitAccumImage.allocation);
+    vkDestroyImageView(_device, _oitRevealImage.imageView, nullptr);
+    vmaDestroyImage(_allocator, _oitRevealImage.image, _oitRevealImage.allocation);
+}
+
+void VkRender::init_oit_pipelines() {
+    // ── OIT transparent pipeline ──────────────────────────────────────────────
+    VkShaderModule vertShader, oitFragShader;
+    if (!load_shader_module("../shaders/mesh.vert.spv", _device, &vertShader))
+        FE_CORE_CRITICAL("Failed to load mesh.vert.spv for OIT");
+    if (!load_shader_module("../shaders/mesh_oit.frag.spv", _device, &oitFragShader))
+        FE_CORE_CRITICAL("Failed to load mesh_oit.frag.spv");
+
+    // Accum attachment: additive (ONE, ONE)
+    VkPipelineColorBlendAttachmentState accumBlend {};
+    accumBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    accumBlend.blendEnable         = VK_TRUE;
+    accumBlend.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    accumBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    accumBlend.colorBlendOp        = VK_BLEND_OP_ADD;
+    accumBlend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    accumBlend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    accumBlend.alphaBlendOp        = VK_BLEND_OP_ADD;
+
+    // Reveal attachment: multiplicative (ZERO, ONE_MINUS_SRC_COLOR)
+    // result.r = 0 + dst.r * (1 - src.r)  →  product(1 - alpha)
+    VkPipelineColorBlendAttachmentState revealBlend {};
+    revealBlend.colorWriteMask     = VK_COLOR_COMPONENT_R_BIT;
+    revealBlend.blendEnable        = VK_TRUE;
+    revealBlend.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+    revealBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    revealBlend.colorBlendOp       = VK_BLEND_OP_ADD;
+    revealBlend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    revealBlend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    revealBlend.alphaBlendOp       = VK_BLEND_OP_ADD;
+
+    PipelineBuilder pb;
+    pb.set_shaders(vertShader, oitFragShader);
+    pb.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    pb.set_polygon_mode(VK_POLYGON_MODE_FILL);
+    pb.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+    pb.set_multisampling_none();
+    pb.set_color_attachments(
+        { _oitAccumImage.imageFormat, _oitRevealImage.imageFormat },
+        { accumBlend, revealBlend });
+    pb.set_depth_format(_depthImage.imageFormat);
+    pb.enable_depthtest(false, VK_COMPARE_OP_GREATER_OR_EQUAL); // test but no write
+    pb._pipelineLayout = metalRoughMaterial.opaquePipeline.layout; // reuse same layout
+
+    _oitTransparentPipeline = pb.build_pipeline(_device);
+
+    vkDestroyShaderModule(_device, vertShader, nullptr);
+    vkDestroyShaderModule(_device, oitFragShader, nullptr);
+
+    // ── OIT composite pipeline ────────────────────────────────────────────────
+    VkShaderModule fsVert, compositeFragShader;
+    if (!load_shader_module("../shaders/fullscreen.vert.spv", _device, &fsVert))
+        FE_CORE_CRITICAL("Failed to load fullscreen.vert.spv");
+    if (!load_shader_module("../shaders/oit_composite.frag.spv", _device, &compositeFragShader))
+        FE_CORE_CRITICAL("Failed to load oit_composite.frag.spv");
+
+    // Composite descriptor layout: set 0 = accum (binding 0) + reveal (binding 1)
+    {
+        DescriptorLayoutBuilder lb;
+        lb.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        lb.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        _oitCompositeDescriptorLayout = lb.build(_device, VK_SHADER_STAGE_FRAGMENT_BIT);
+    }
+
+    VkPipelineLayoutCreateInfo compositeLayoutInfo = pipeline_layout_create_info();
+    compositeLayoutInfo.setLayoutCount = 1;
+    compositeLayoutInfo.pSetLayouts    = &_oitCompositeDescriptorLayout;
+    VK_CHECK(vkCreatePipelineLayout(_device, &compositeLayoutInfo, nullptr, &_oitCompositePipelineLayout));
+
+    // Alpha blend: composite transparent layer over opaque
+    VkPipelineColorBlendAttachmentState compositeBlend {};
+    compositeBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    compositeBlend.blendEnable         = VK_TRUE;
+    compositeBlend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    compositeBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    compositeBlend.colorBlendOp        = VK_BLEND_OP_ADD;
+    compositeBlend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    compositeBlend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    compositeBlend.alphaBlendOp        = VK_BLEND_OP_ADD;
+
+    pb.clear();
+    pb.set_shaders(fsVert, compositeFragShader);
+    pb.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    pb.set_polygon_mode(VK_POLYGON_MODE_FILL);
+    pb.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+    pb.set_multisampling_none();
+    pb.set_color_attachment_format(_drawImage.imageFormat);
+    pb._colorBlendAttachment = compositeBlend;
+    pb.disable_depthtest();
+    pb._pipelineLayout = _oitCompositePipelineLayout;
+
+    _oitCompositePipeline = pb.build_pipeline(_device);
+
+    vkDestroyShaderModule(_device, fsVert, nullptr);
+    vkDestroyShaderModule(_device, compositeFragShader, nullptr);
+
+    _mainDeletionQueue.push_function([this]() {
+        vkDestroyPipeline(_device, _oitTransparentPipeline, nullptr);
+        vkDestroyPipeline(_device, _oitCompositePipeline, nullptr);
+        vkDestroyPipelineLayout(_device, _oitCompositePipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(_device, _oitCompositeDescriptorLayout, nullptr);
+    });
+}
+
 // ─── Init functions ────────────────────────────────────────────────────────
 
 void VkRender::init_vulkan() {
@@ -841,11 +1108,15 @@ void VkRender::init_vulkan() {
     features12.descriptorBindingVariableDescriptorCount  = true;
     features12.runtimeDescriptorArray                    = true;
 
+    VkPhysicalDeviceFeatures baseFeatures {};
+    baseFeatures.independentBlend = VK_TRUE; // needed for WBOIT (different blend per attachment)
+
     vkb::PhysicalDeviceSelector selector { vkb_inst };
     vkb::PhysicalDevice physicalDevice = selector
         .set_minimum_version(1, 3)
         .set_required_features_13(features13)
         .set_required_features_12(features12)
+        .set_required_features(baseFeatures)
         .set_surface(_surface)
         .select()
         .value();
@@ -929,7 +1200,10 @@ void VkRender::init_swapchain() {
         vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
         vkDestroyImageView(_device, _depthImage.imageView, nullptr);
         vmaDestroyImage(_allocator, _depthImage.image, _depthImage.allocation);
+        destroy_oit_images();
     });
+
+    create_oit_images(drawImageExtent);
 }
 
 void VkRender::init_commands() {
@@ -1053,6 +1327,7 @@ void VkRender::init_descriptors() {
 void VkRender::init_pipelines() {
     init_background_pipelines();
     metalRoughMaterial.build_pipelines(this);
+    init_oit_pipelines();
 
     _mainDeletionQueue.push_function([this]() {
         vkDestroyDescriptorSetLayout(_device, metalRoughMaterial.materialLayout, nullptr);
@@ -1248,11 +1523,12 @@ void VkRender::resize_swapchain() {
 
     create_swapchain(_windowExtent.width, _windowExtent.height);
 
-    // Rebuild draw/depth images at new extent
+    // Rebuild draw/depth/OIT images at new extent
     vkDestroyImageView(_device, _drawImage.imageView, nullptr);
     vmaDestroyImage(_allocator, _drawImage.image, _drawImage.allocation);
     vkDestroyImageView(_device, _depthImage.imageView, nullptr);
     vmaDestroyImage(_allocator, _depthImage.image, _depthImage.allocation);
+    destroy_oit_images();
 
     VkExtent3D newExtent { _windowExtent.width, _windowExtent.height, 1 };
 
@@ -1276,6 +1552,8 @@ void VkRender::resize_swapchain() {
         VkImageViewCreateInfo dview_info = imageview_create_info(_depthImage.imageFormat, _depthImage.image, VK_IMAGE_ASPECT_DEPTH_BIT);
         VK_CHECK(vkCreateImageView(_device, &dview_info, nullptr, &_depthImage.imageView));
     }
+
+    create_oit_images(newExtent);
 
     // Update compute descriptor pointing at the draw image storage view
     DescriptorWriter writer;

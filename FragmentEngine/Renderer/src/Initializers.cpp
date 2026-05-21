@@ -146,6 +146,16 @@ VkRenderingAttachmentInfo fe::depth_attachment_info(
 }
 
 
+VkRenderingAttachmentInfo fe::depth_attachment_info_readonly(VkImageView view, VkImageLayout layout) {
+    VkRenderingAttachmentInfo info{};
+    info.sType      = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    info.imageView  = view;
+    info.imageLayout = layout;
+    info.loadOp     = VK_ATTACHMENT_LOAD_OP_LOAD;
+    info.storeOp    = VK_ATTACHMENT_STORE_OP_NONE;
+    return info;
+}
+
 VkRenderingInfo fe::rendering_info(VkExtent2D renderExtent, VkRenderingAttachmentInfo *colorAttachment,
                                    VkRenderingAttachmentInfo *depthAttachment) {
     VkRenderingInfo renderInfo{};

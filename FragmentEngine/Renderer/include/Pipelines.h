@@ -9,12 +9,16 @@ namespace fe {
 
         VkPipelineInputAssemblyStateCreateInfo _inputAssembly;
         VkPipelineRasterizationStateCreateInfo _rasterizer;
-        VkPipelineColorBlendAttachmentState _colorBlendAttachment;
-        VkPipelineMultisampleStateCreateInfo _multisampling;
-        VkPipelineLayout _pipelineLayout;
-        VkPipelineDepthStencilStateCreateInfo _depthStencil;
-        VkPipelineRenderingCreateInfo _renderInfo;
-        VkFormat _colorAttachmentformat;
+        VkPipelineColorBlendAttachmentState    _colorBlendAttachment;    // single-attachment path
+        VkPipelineMultisampleStateCreateInfo   _multisampling;
+        VkPipelineLayout                       _pipelineLayout;
+        VkPipelineDepthStencilStateCreateInfo  _depthStencil;
+        VkPipelineRenderingCreateInfo          _renderInfo;
+        VkFormat                               _colorAttachmentformat;   // single-attachment path
+
+        // Multi-attachment path (populated by set_color_attachments)
+        std::vector<VkPipelineColorBlendAttachmentState> _colorBlendAttachments;
+        std::vector<VkFormat>                            _colorAttachmentFormats;
 
         PipelineBuilder() { clear(); }
 
@@ -30,6 +34,8 @@ namespace fe {
         void enable_blending_additive();
         void enable_blending_alphablend();
         void set_color_attachment_format(VkFormat format);
+        void set_color_attachments(const std::vector<VkFormat>& formats,
+                                   const std::vector<VkPipelineColorBlendAttachmentState>& blendStates);
         void set_depth_format(VkFormat format);
         void disable_depthtest();
         void enable_depthtest(bool depthWriteEnable, VkCompareOp op);
